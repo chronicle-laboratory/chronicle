@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = [
+    "chronicle-common",
+    "chronicle-cmd",
+    "chronicle-ffi",
+    "chronicle-node",
+    "chronicle-sdk"
+]
