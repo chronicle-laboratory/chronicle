@@ -1,0 +1,18 @@
+[package]
+name = "chronicle-examples"
+version = "0.1.0"
+edition = "2024"
+resolver = "3"
+publish = false
+
+[dependencies]
+libchronicle = { path = "../chronicles/libchronicle" }
+chronicled = { path = "../chronicled" }
+catalog = { path = "../catalog" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[[example]]
+name = "basic"
+path = "basic.rs"

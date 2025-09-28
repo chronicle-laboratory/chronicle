@@ -1,0 +1,11 @@
+[server]
+bind_address = "127.0.0.1:7070"
+
+[wal]
+dir = "/tmp/chronicle-wal"
+
+[storage]
+dir = "/tmp/chronicle-storage"
+
+[log]
+level = "info"
