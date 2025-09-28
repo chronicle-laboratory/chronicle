@@ -1,0 +1,50 @@
+[package]
+name = "chronicled"
+version = "0.1.0"
+edition = "2024"
+resolver = "3"
+
+
+[dependencies]
+chronicle-proto = { workspace = true }
+catalog = { path = "../catalog" }
+clap = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+tonic = { workspace = true }
+tonic-build = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+backon = { workspace = true }
+dashmap = { workspace = true }
+xxhash-rust = { workspace = true }
+uuid = { workspace = true }
+num_cpus = { workspace = true }
+rocksdb = { workspace = true }
+snap = { workspace = true }
+backoff = { workspace = true }
+memberlist = { workspace = true }
+crossbeam-channel = { workspace = true }
+once_cell = { workspace = true }
+
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-prometheus = { workspace = true }
+prometheus = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+tokio-stream = { workspace = true }
+futures-util = { workspace = true }
+async-stream = { workspace = true }
+handle = "1.0.2"
+
+[dev-dependencies]
+tempfile = "3.8"
