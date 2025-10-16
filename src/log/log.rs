@@ -1,0 +1,5 @@
+struct Log {}
+
+impl Log {
+    
+}

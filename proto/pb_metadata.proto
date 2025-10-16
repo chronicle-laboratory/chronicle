@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package pb_metadata;
+
+
+
+// ============================ State Machine
+
+
+message Proposal {
+
+}
+
+
+
+
+// =============================================
+
+message UnitMeta {
+  bool bootstrap_partition = 1;
+}
+
+message UnitInfo {
+  uint64 id = 1;
+  string advertise_address = 2;
+}
+
+
+
+
+message Unit {
+
+}
+
+service Metadata {
+
+}

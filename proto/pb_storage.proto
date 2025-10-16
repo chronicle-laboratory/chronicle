@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+
+package pb_storage;
+
+
+message Record {
+
+}
