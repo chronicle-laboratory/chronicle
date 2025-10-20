@@ -6,10 +6,35 @@ package pb_metadata;
 
 // ============================ State Machine
 
-
-message Proposal {
-
+message Put {
+  bytes key = 1;
+  bytes value = 2;
 }
+
+message Delete {
+  bytes key = 1;
+}
+
+message DeleteRange {
+  bytes start_key = 1;
+  bytes end_key = 2;
+}
+
+message MutableOperation {
+  repeated Put puts = 1;
+  repeated Delete deletes = 2;
+  repeated DeleteRange delete_ranges = 3;
+}
+
+message Entry {
+  MutableOperation operation = 1;
+  uint64 timestamp = 2;
+}
+
+message Raw {
+  bytes payload = 1;
+}
+
 
 
 

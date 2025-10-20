@@ -26,7 +26,8 @@ rocksdb = { version = "0.24.0" }
 snap = "1.1.1"
 backoff = { version = "0.4.0", features = ["tokio"] }
 memberlist = { version = "0.6.5", default-features = true, features = ["tokio"] }
-raft = { version = "0.7.0" , default-features = false,  features = ["prost-codec"]}
+raft = { version = "0.7.0" , default-features = false,  features = ["prost-codec", "default-logger"]}
+crossbeam-channel = "0.5"
 
 opentelemetry = "^0.29"
 opentelemetry_sdk = "^0.29"
