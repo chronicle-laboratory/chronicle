@@ -31,12 +31,6 @@ message Entry {
   uint64 timestamp = 2;
 }
 
-message Raw {
-  bytes payload = 1;
-}
-
-
-
 
 
 // =============================================
@@ -57,6 +51,25 @@ message Unit {
 
 }
 
+message MailPostRequest {
+  bytes payload = 1;
+}
+
+message MailPostResponse {
+
+}
+
+message SnapshotRequest {
+  string path = 1;
+}
+
+message SnapshotResponse {
+
+}
+
 service Metadata {
 
+  rpc mail_post(stream MailPostRequest) returns (stream MailPostResponse);
+
+  rpc load_snapshot(stream SnapshotRequest) returns (stream SnapshotResponse);
 }

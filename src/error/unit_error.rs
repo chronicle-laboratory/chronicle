@@ -7,4 +7,7 @@ pub enum UnitError {
 
     #[error("Metadata partition error: {0}")]
     MetadataPartition(String),
+
+    #[error("Metadata partition not leader error")]
+    MetadataPartitionNotLeader(),
 }
