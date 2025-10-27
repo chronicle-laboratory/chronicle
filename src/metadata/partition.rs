@@ -1,79 +1,35 @@
 use crate::error::unit_error::UnitError;
 use crate::error::unit_error::UnitError::{MetadataPartition, MetadataPartitionNotLeader};
-use crate::metadata::metadata;
 use crate::metadata::node_aware::NodeAware;
-use crate::metadata::provider_manager::ProviderManager;
-use crate::pb_metadata::Entry;
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, unbounded};
-use dashmap::DashMap;
-use log::{error, warn};
-use prost::Message as _;
+use crate::metadata::partition::Proposal::ConfigChange;
+use crate::metadata::partition_pipeline::Pipeline;
+use crate::metadata::partition_store::PartitionStore;
+use crate::pb_metadata::{Entry, MailPostChunk, SnapshotData};
+use crate::provider::internal_provider_manager::InternalProviderManager;
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
+use log::{debug, error, warn};
+use memberlist::futures::{AsyncReadExt, TryFutureExt};
+use prost::{DecodeError, Message as _};
 use protobuf::Message as _;
-use raft::eraftpb::Message;
+use raft::eraftpb::EntryType::EntryNormal;
 use raft::eraftpb::{ConfChange, Snapshot};
-use raft::{Config, GetEntriesContext, RaftState, RawNode, StateRole, Storage};
+use raft::eraftpb::{Message, SnapshotMetadata};
+use raft::{Config, GetEntriesContext, RaftState, RawNode, Ready, StateRole, Storage};
 use std::collections::HashMap;
-use std::hash::Hash;
 use std::net::SocketAddr;
+use std::os::macos::raw::stat;
 use std::sync::{Arc, Mutex};
+use std::task::ready;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
-use tonic::codegen::tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
-use tonic::{IntoRequest, Request};
-
-#[derive(Clone)]
-struct PartitionStore {}
-
-impl PartitionStore {
-    pub(crate) fn apply_entries(&self, p0: Vec<raft::eraftpb::Entry>) {
-        todo!()
-    }
-
-    pub(crate) fn apply_snapshot(&self, p0: &Snapshot) {
-        todo!()
-    }
-    pub(crate) fn apply_commit_offset(&self, p0: u64) {
-        todo!()
-    }
-}
-
-impl Storage for PartitionStore {
-    fn initial_state(&self) -> raft::Result<RaftState> {
-        todo!()
-    }
-
-    fn entries(
-        &self,
-        low: u64,
-        high: u64,
-        max_size: impl Into<Option<u64>>,
-        context: GetEntriesContext,
-    ) -> raft::Result<Vec<Entry>> {
-        todo!()
-    }
-
-    fn term(&self, idx: u64) -> raft::Result<u64> {
-        todo!()
-    }
-
-    fn first_index(&self) -> raft::Result<u64> {
-        todo!()
-    }
-
-    fn last_index(&self) -> raft::Result<u64> {
-        todo!()
-    }
-
-    fn snapshot(&self, request_index: u64, to: u64) -> raft::Result<String> {
-        todo!()
-    }
-}
+use tokio::{spawn, sync};
+use tracing::field::debug;
 
 struct PartitionOptions {
     id: u64,
-    provider_manager: ProviderManager,
+    provider_manager: InternalProviderManager,
 }
 
 impl Into<Config> for PartitionOptions {
@@ -105,6 +61,7 @@ struct Inner {
 
 #[derive(Clone)]
 pub struct Partition {
+    id: u64,
     inner: Arc<Inner>,
     node_aware: NodeAware,
     state_machine_handle: Arc<Mutex<JoinHandle<()>>>,
@@ -114,53 +71,57 @@ impl Partition {
     fn new(
         options: PartitionOptions,
         node_aware: NodeAware,
-        provider_manager: ProviderManager,
+        provider_manager: InternalProviderManager,
     ) -> Result<Self, UnitError> {
+        let partition_id = options.id;
         let raft_config: Config = options.into();
         let partition_store = PartitionStore {};
-
         let state_machine = RawNode::with_default_logger(&raft_config, partition_store.clone())
             .map_err(|err| MetadataPartition(err.to_string()))?;
-        let (mailbox_tx, mailbox_rx) = unbounded::<Mail>();
-        let handle =
-            bg_start_state_machine(state_machine, mailbox_rx, provider_manager, partition_store);
+        let (mailbox_tx, mailbox_rx) = bounded::<Mail>(1024);
+        let state_machine_handle = bg_start_state_machine(
+            partition_id,
+            node_aware.clone(),
+            state_machine,
+            mailbox_rx,
+            provider_manager,
+            partition_store,
+        );
         Ok(Self {
+            id: partition_id,
             inner: Arc::new(Inner {
                 mailbox: mailbox_tx,
                 followers: Default::default(),
             }),
             node_aware,
-            state_machine_handle: Arc::new(Mutex::new(handle)),
+            state_machine_handle: Arc::new(Mutex::new(state_machine_handle)),
         })
     }
 
     async fn get_follower_stream(&self, follower_id: u64) -> Sender<Message> {
-        match self.node_aware.get_node_address(follower_id) {
-            None => {}
-            Some(_) => {}
-        }
+        todo!()
     }
 }
 
 fn bg_start_state_machine(
+    partition_id: u64,
+    node_aware: NodeAware,
     mut state_machine: RawNode<PartitionStore>,
     mailbox: Receiver<Mail>,
-    provider_manager: ProviderManager,
+    provider_manager: InternalProviderManager,
     partition_store: PartitionStore,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
+    spawn(async move {
         let mut t = Instant::now();
         let timeout = Duration::from_millis(100);
-        // (1) propose the mail first
         loop {
-            match mailbox.recv_timeout(timeout) {
-                Ok(mail) => propose_mail(&mut state_machine, mail),
-                Err(RecvTimeoutError::Timeout) => break,
-                Err(RecvTimeoutError::Disconnected) => return,
+            loop {
+                match mailbox.recv_timeout(timeout) {
+                    Ok(mail) => propose_mail(&mut state_machine, mail),
+                    Err(RecvTimeoutError::Timeout) => break,
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
             }
-        }
-        // (2) handling ready
-        loop {
             if t.elapsed() > timeout {
                 state_machine.tick();
                 t = Instant::now();
@@ -168,75 +129,239 @@ fn bg_start_state_machine(
             if !state_machine.has_ready() {
                 continue;
             }
-            let mut ready_status = state_machine.ready();
-            if !ready_status.messages().is_empty() {
-                let state = ready_status.take_messages();
-                process_state(&mut state_machine, &provider_manager, state).await
-            }
-            if !ready_status.snapshot().is_empty() {
-                let snapshot = ready_status.snapshot();
-                load_snapshot(&provider_manager, snapshot).await;
-                partition_store.apply_snapshot(snapshot)
-            }
-            if !ready_status.committed_entries().is_empty() {
-                let committed_entries = ready_status.take_committed_entries();
-                process_committed_entry(&mut state_machine, committed_entries).await
-            }
-            if ready_status.entries().is_empty() {
-                let entries = ready_status.take_entries();
-                partition_store.apply_entries(entries)
-            }
-            let mut light_ready = state_machine.advance(ready_status);
-            if let Some(commit_index) = light_ready.commit_index() {
-                // state persist
-                partition_store.apply_commit_offset(commit_index);
-            }
-            if !light_ready.messages().is_empty() {
-                let state = light_ready.take_messages();
-                process_state(&mut state_machine, &provider_manager, state).await
-            }
-            if !light_ready.committed_entries().is_empty() {
-                let committed_entries = light_ready.take_committed_entries();
-                process_committed_entry(&mut state_machine, committed_entries).await
-            }
-            state_machine.advance_apply();
+            let ready = state_machine.ready();
+            let mut pipeline = Pipeline::new(
+                partition_id,
+                node_aware.clone(),
+                provider_manager.clone(),
+                partition_store.clone(),
+                ready,
+            );
+            pipeline.run(&mut state_machine)
+
+            // let mut ready_status = state_machine.ready();
+            // if !ready_status.messages().is_empty() {
+            //     if !process_message(
+            //         partition_id,
+            //         &node_aware,
+            //         &mut state_machine,
+            //         &provider_manager,
+            //         ready_status.take_messages(),
+            //     ) {
+            //         continue;
+            //     }
+            // }
+            // if !ready_status.snapshot().is_empty() {
+            //     if !process_snapshot(&node_aware, &provider_manager, &mut ready_status) {
+            //         continue;
+            //     }
+            // }
+            // if !is_snapshot_applied(&mut snapshot_load_handle) {
+            //     continue;
+            // }
+            // if !ready_status.committed_entries().is_empty() {
+            //     let committed_entries = ready_status.take_committed_entries();
+            //     process_committed_entries(&mut state_machine, committed_entries).await
+            // }
+            // if ready_status.entries().is_empty() {
+            //     let entries = ready_status.take_entries();
+            //     if !process_entries() {
+            //         continue;
+            //     }
+            // }
+            // if let Some(hs) = ready_status.hs() {
+            //     if !process_hard_status() {
+            //         continue;
+            //     }
+            // }
+            // if !ready_status.persisted_messages().is_empty() {
+            //     let vec = ready_status.take_persisted_messages();
+            //     if !process_persisted_messages() {
+            //         continue;
+            //     }
+            // }
+            // let mut light_ready = state_machine.advance(ready_status);
+            // if let Some(commit_index) = light_ready.commit_index() {
+            //     if !process_commit_index() {}
+            // }
+            // if !light_ready.messages().is_empty() {
+            //     if !process_message(
+            //         partition_id,
+            //         &node_aware,
+            //         &mut state_machine,
+            //         &provider_manager,
+            //         light_ready.take_messages(),
+            //     ) {
+            //         continue;
+            //     }
+            // }
+            // if !light_ready.committed_entries().is_empty() {
+            //     let committed_entries = light_ready.take_committed_entries();
+            //     if !process_committed_entries(&mut state_machine, committed_entries) {
+            //         continue;
+            //     }
+            // }
+            // state_machine.advance_apply();
         }
     })
 }
 
-#[inline]
-async fn load_snapshot(provider_manager: &ProviderManager, snapshot: &Snapshot) {}
+fn process_commit_index() -> bool {}
 
-#[inline]
-async fn process_committed_entry(
-    state_machine: &mut RawNode<PartitionStore>,
-    committed_entries: Vec<raft::eraftpb::Entry>,
-) {
-    for committed_entry in committed_entries {}
+fn process_entries() -> bool {}
+
+fn process_hard_status() -> bool {}
+
+fn process_persisted_messages() -> bool {}
+
+fn is_snapshot_applied(load_handle: &mut Option<(u64, JoinHandle<Result<(), UnitError>>)>) -> bool {
+}
+
+fn process_snapshot(
+    node_aware: &NodeAware,
+    provider_manager: &InternalProviderManager,
+    mut ready_status: &mut Ready,
+) -> bool {
+    if !ready_status.snapshot().is_empty() {
+        let snapshot = ready_status.snapshot();
+        match SnapshotData::decode(snapshot.get_data()) {
+            Ok(snapshot_data) => {
+                match &snapshot_load_handle {
+                    None => {}
+                    Some((snapshot_id, handle)) => {
+                        let own_snapshot_id = snapshot_id.clone();
+                        if own_snapshot_id != snapshot_data.id {
+                            if !handle.is_finished() {
+                                handle.abort_handle().abort();
+                            } else {
+                                snapshot_load_handle = Some((
+                                    own_snapshot_id,
+                                    spawn(load_snapshot(
+                                        &node_aware,
+                                        &provider_manager,
+                                        snapshot.get_metadata(),
+                                        &snapshot_data,
+                                    )),
+                                ))
+                            }
+                            return true; // skip to the next round
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                warn!(
+                    "Failed to decode snapshot data, break and retry in the next round. Error: {}",
+                    err
+                );
+                return true;
+            }
+        };
+    }
+    // waiting for snapshot apply first
+    if let Some((_, handle)) = &snapshot_load_handle {
+        if !handle.is_finished() {
+            return true;
+        }
+        let (_, handle) = snapshot_load_handle.take().unwrap();
+        match handle.await {
+            Ok(result) => {
+                if let Err(err) = result {
+                    warn!(
+                        "Failed to load snapshot, break and retry in the next round. Error: {}",
+                        err
+                    );
+                    return true;
+                }
+            }
+            Err(join_error) => {
+                warn!(
+                    "Failed to load snapshot, break and retry in the next round. Error: {}",
+                    join_error
+                );
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[inline]
-async fn process_state(
+async fn load_snapshot(
+    node_aware: &NodeAware,
+    provider_manager: &InternalProviderManager,
+    snapshot_meta: &SnapshotMetadata,
+    snapshot_data: &SnapshotData,
+) -> Result<(), UnitError> {
+    // let option = node_aware.get_node_address(snapshot_data.from);
+    // provider_manager.try_get_provider(snapshot_data.from)
+    todo!()
+}
+
+#[inline]
+fn process_committed_entries(
     state_machine: &mut RawNode<PartitionStore>,
-    provider_manager: &ProviderManager,
+    committed_entries: Vec<raft::eraftpb::Entry>,
+) -> bool {
+    for committed_entry in committed_entries {}
+    todo!()
+}
+
+#[inline]
+fn process_message(
+    partition_id: u64,
+    node_aware: &NodeAware,
+    _: &mut RawNode<PartitionStore>,
+    provider_manager: &InternalProviderManager,
     states: Vec<Message>,
-) {
+) -> bool {
+    let mut batches: HashMap<SocketAddr, Vec<Vec<u8>>> = HashMap::new();
     for state in states {
         let mut buf = Vec::with_capacity(state.compute_size() as usize);
         if let Err(err) = state.write_to_vec(&mut buf) {
-            error!("Encode state machine message failed. {}", err);
-            Err(MetadataPartition(err.to_string()));
+            warn!(
+                "Failed to encode the state machine message. partition_id={:?} error: {:?}",
+                partition_id, err
+            );
+            return false;
         };
-        let target = state.to;
-        let mut provider = provider_manager.get_provider(target);
-        let (tx, rx) = mpsc::channel(256);
-        let mut mail_request = Request::new(ReceiverStream::new(rx));
-        let stream = provider
-            .mail_post(mail_request)
-            .await
-            .map_err(|err| MetadataPartition(err.to_string()))?;
+        match node_aware.get_node_address(state.to) {
+            None => {
+                warn!(
+                    "Target address can't be found. partition_id={:?} target_node={:?}.",
+                    partition_id, state.to
+                );
+                return false;
+            }
+            Some(address) => {
+                batches.entry(address).or_default().push(buf);
+            }
+        }
     }
-    Ok(())
+    for (target, batch) in batches {
+        match provider_manager.try_get_mail_post_stream(partition_id, target) {
+            None => {
+                debug!(
+                    "Target mail post stream does not init yet. partition_id={:?} target={:?}",
+                    partition_id, target
+                );
+                return false;
+            }
+            Some(sender) => {
+                if let Err(err) = sender.try_send(MailPostChunk {
+                    partition_id,
+                    payloads: batch,
+                }) {
+                    warn!(
+                        "Failed to send mail to the stream. partition_id={:?} target={:?} error={:?}",
+                        partition_id, target, err
+                    );
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
 
 #[inline]

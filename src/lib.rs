@@ -14,6 +14,7 @@ mod banner;
 mod error;
 mod log;
 mod metadata;
+mod provider;
 mod service;
 mod storage;
 pub mod unit;

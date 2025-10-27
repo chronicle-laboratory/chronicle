@@ -4,34 +4,7 @@ package pb_metadata;
 
 
 
-// ============================ State Machine
-
-message Put {
-  bytes key = 1;
-  bytes value = 2;
-}
-
-message Delete {
-  bytes key = 1;
-}
-
-message DeleteRange {
-  bytes start_key = 1;
-  bytes end_key = 2;
-}
-
-message MutableOperation {
-  repeated Put puts = 1;
-  repeated Delete deletes = 2;
-  repeated DeleteRange delete_ranges = 3;
-}
-
-message Entry {
-  MutableOperation operation = 1;
-  uint64 timestamp = 2;
-}
-
-
+// -------------- State Machine  ---------------
 
 // =============================================
 
@@ -44,32 +17,36 @@ message UnitInfo {
   string advertise_address = 2;
 }
 
-
-
-
 message Unit {
 
 }
 
-message MailPostRequest {
-  bytes payload = 1;
+message MailPostChunk {
+  uint64 partition_id = 1;
+  repeated bytes payloads = 2;
 }
 
-message MailPostResponse {
+message MailPostSummary {
 
+}
+
+message SnapshotData {
+  uint64 id = 1;
+  uint64 from = 2;
 }
 
 message SnapshotRequest {
   string path = 1;
 }
 
-message SnapshotResponse {
+message SnapshotChunk {
 
 }
 
+
 service Metadata {
 
-  rpc mail_post(stream MailPostRequest) returns (stream MailPostResponse);
+  rpc mail_post(stream MailPostChunk) returns(MailPostSummary);
 
-  rpc load_snapshot(stream SnapshotRequest) returns (stream SnapshotResponse);
+  rpc load_snapshot(SnapshotRequest) returns (stream SnapshotChunk);
 }

@@ -1,16 +1,15 @@
 use crate::error::unit_error::UnitError;
 use crate::error::unit_error::UnitError::MetadataNodeAware;
+use crate::metadata::decode_id;
 use crate::metadata::metadata::MetadataState;
 use crate::pb_metadata::UnitMeta;
-use crate::storage::storage::Storage;
-use dashmap::DashMap;
 use hyper::body::Bytes;
 use log::error;
-use memberlist::delegate::{CompositeDelegate, NodeDelegate, VoidDelegate};
+use memberlist::delegate::{CompositeDelegate, EventDelegate, NodeDelegate, VoidDelegate};
 use memberlist::net::resolver::dns::DnsResolver;
 use memberlist::net::stream_layer::tcp::Tcp;
 use memberlist::net::{HostAddr, NetTransportOptions, Node, NodeId, TokioNetTransport};
-use memberlist::proto::{MaybeResolvedAddress, Meta};
+use memberlist::proto::{MaybeResolvedAddress, Meta, NodeState};
 use memberlist::tokio::{TokioRuntime, TokioTcp, TokioTcpMemberlist};
 use memberlist::{Memberlist, Options};
 use prost::Message;
@@ -43,32 +42,45 @@ impl NodeDelegate for MetadataDelegation {
     async fn merge_remote_state(&self, buf: &[u8], join: bool) -> () {}
 }
 
-type NodeAwareVoidDelegate = VoidDelegate<NodeId, SocketAddr>;
-type NodeAwareCompositeDelete = CompositeDelegate<
-    NodeId,
-    SocketAddr,
-    NodeAwareVoidDelegate,
-    NodeAwareVoidDelegate,
-    NodeAwareVoidDelegate,
-    NodeAwareVoidDelegate,
-    NodeAwareVoidDelegate,
-    NodeAwareVoidDelegate,
+impl EventDelegate for MetadataDelegation {
+    type Id = NodeId;
+    type Address = SocketAddr;
+
+    async fn notify_join(&self, node: Arc<NodeState<Self::Id, Self::Address>>) -> () {
+        let id = decode_id(&node.id);
+        self.metadata_state.members.insert(id, node.addr.clone());
+        ()
+    }
+
+    async fn notify_leave(&self, node: Arc<NodeState<Self::Id, Self::Address>>) -> () {
+        let id = decode_id(&node.id);
+        self.metadata_state.members.remove(&id);
+        ()
+    }
+
+    async fn notify_update(&self, node: Arc<NodeState<Self::Id, Self::Address>>) -> () {
+        let id = decode_id(&node.id);
+        self.metadata_state.members.insert(id, node.addr.clone());
+        ()
+    }
+}
+
+type NodeAwareMemberlist = Memberlist<
+    TokioNetTransport<NodeId, DnsResolver<TokioRuntime>, TokioTcp>,
+    CompositeDelegate<
+        NodeId,
+        SocketAddr,
+        VoidDelegate<NodeId, SocketAddr>,
+        VoidDelegate<NodeId, SocketAddr>,
+        MetadataDelegation,
+        VoidDelegate<NodeId, SocketAddr>,
+        MetadataDelegation,
+        VoidDelegate<NodeId, SocketAddr>,
+    >,
 >;
 
 struct Inner {
-    node_aware: Memberlist<
-        TokioNetTransport<NodeId, DnsResolver<TokioRuntime>, TokioTcp>,
-        CompositeDelegate<
-            NodeId,
-            SocketAddr,
-            VoidDelegate<NodeId, SocketAddr>,
-            VoidDelegate<NodeId, SocketAddr>,
-            VoidDelegate<NodeId, SocketAddr>,
-            VoidDelegate<NodeId, SocketAddr>,
-            MetadataDelegation,
-            VoidDelegate<NodeId, SocketAddr>,
-        >,
-    >,
+    node_aware: NodeAwareMemberlist,
 }
 pub struct NodeAwareOptions {
     pub _self: Node<NodeId, SocketAddr>,
@@ -101,22 +113,7 @@ impl NodeAware {
 async fn join_node_aware_group(
     node_aware_options: NodeAwareOptions,
     metadata_state: &Arc<MetadataState>,
-) -> Result<
-    Memberlist<
-        TokioNetTransport<NodeId, DnsResolver<TokioRuntime>, TokioTcp>,
-        CompositeDelegate<
-            NodeId,
-            SocketAddr,
-            VoidDelegate<NodeId, SocketAddr>,
-            VoidDelegate<NodeId, SocketAddr>,
-            VoidDelegate<NodeId, SocketAddr>,
-            VoidDelegate<NodeId, SocketAddr>,
-            MetadataDelegation,
-            VoidDelegate<NodeId, SocketAddr>,
-        >,
-    >,
-    UnitError,
-> {
+) -> Result<NodeAwareMemberlist, UnitError> {
     let delegation = MetadataDelegation {
         metadata_state: metadata_state.clone(),
     };
@@ -126,8 +123,9 @@ async fn join_node_aware_group(
             .into_iter()
             .collect(),
     );
-    let delegate =
-        CompositeDelegate::<NodeId, SocketAddr>::default().with_node_delegate(delegation);
+    let delegate = CompositeDelegate::<NodeId, SocketAddr>::default()
+        .with_node_delegate(delegation.clone())
+        .with_event_delegate(delegation);
     let option = Options::wan();
     let node_aware = TokioTcpMemberlist::with_delegate(delegate, node_aware_net_ops, option)
         .await

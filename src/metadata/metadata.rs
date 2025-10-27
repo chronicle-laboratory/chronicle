@@ -8,9 +8,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 pub struct MetadataState {
-    storage: Storage,
-    partitions: DashMap<u64, Partition>,
-    members: DashMap<u64, SocketAddr>,
+    pub storage: Storage,
+    pub partitions: DashMap<u64, Partition>,
+    pub members: DashMap<u64, SocketAddr>,
 }
 
 impl MetadataState {
@@ -38,6 +38,7 @@ impl Metadata {
         let metadata_state = Arc::new(MetadataState {
             storage: options.storage,
             partitions: DashMap::new(),
+            members: DashMap::new(),
         });
 
         let metadata = Metadata {

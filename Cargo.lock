@@ -709,6 +709,7 @@ dependencies = [
  "log",
  "memberlist",
  "num_cpus",
+ "once_cell",
  "opentelemetry",
  "opentelemetry-prometheus",
  "opentelemetry_sdk",

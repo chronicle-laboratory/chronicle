@@ -10,4 +10,7 @@ pub enum UnitError {
 
     #[error("Metadata partition not leader error")]
     MetadataPartitionNotLeader(),
+
+    #[error("Transport error: {0}")]
+    Transport(String),
 }
