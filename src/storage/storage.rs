@@ -9,4 +9,6 @@ pub struct Storage {
     inner: Arc<Inner>,
 }
 
-impl Storage {}
+impl Storage {
+
+}

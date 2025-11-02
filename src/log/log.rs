@@ -1,5 +1,10 @@
-struct Log {}
+use std::sync::Arc;
 
-impl Log {
-    
+struct Inner {}
+
+#[derive(Clone)]
+pub struct Log {
+    inner: Arc<Inner>,
 }
+
+impl Log {}

@@ -45,6 +45,13 @@ impl InternalProviderManager {
         }
     }
 
+    pub fn get_provider(&self, target: SocketAddr) -> Result<MetadataClient<Channel>, UnitError> {
+        match self.inner.providers.entry(target) {
+            Entry::Occupied(entry) => Some(entry.get().clone()),
+            Entry::Vacant(entry) => None,
+        }
+    }
+
     pub fn try_get_provider(&self, target: SocketAddr) -> Option<MetadataClient<Channel>> {
         match self.inner.providers.entry(target) {
             Entry::Occupied(entry) => Some(entry.get().clone()),

@@ -6,7 +6,6 @@ pub mod metadata;
 mod node_aware;
 mod partition;
 mod partition_net;
-mod partition_state;
 mod partition_pipeline;
 mod partition_store;
 

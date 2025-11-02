@@ -13,6 +13,7 @@ use memberlist::proto::{MaybeResolvedAddress, Meta, NodeState};
 use memberlist::tokio::{TokioRuntime, TokioTcp, TokioTcpMemberlist};
 use memberlist::{Memberlist, Options};
 use prost::Message;
+use std::fmt::format;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -105,8 +106,18 @@ impl NodeAware {
         })
     }
 
-    pub fn get_node_address(&self, node_id: u64) -> Option<SocketAddr> {
+    pub fn try_get_node_address(&self, node_id: u64) -> Option<SocketAddr> {
         self.metadata_state.get_node_address(node_id)
+    }
+
+    pub fn get_node_address(&self, node_id: u64) -> Result<SocketAddr, UnitError> {
+        match self.metadata_state.get_node_address(node_id) {
+            None => Err(MetadataNodeAware(format!(
+                "Node address not found. node: {}",
+                node_id
+            ))),
+            Some(node_addr) => Ok(node_addr),
+        }
     }
 }
 
