@@ -4,6 +4,63 @@ syntax = "proto3";
 package pb_external;
 
 
-service Chronicle {
 
+message CreateTimelineRequest{
+
+}
+
+message CreateTimelineResponse {
+
+}
+
+message FetchEventsRequest {
+
+}
+
+message FetchEventsResponse {
+
+}
+
+
+message RecordEventsRequest {
+
+}
+
+message RecordEventsResponse {
+
+}
+
+message DropTimelineRequest {
+
+}
+
+message DropTimelineResponse {
+
+}
+
+
+message BeginAuthorshipRequest {
+
+}
+
+
+message BeginAuthorshipResponse {
+
+}
+
+message EndAuthorshipRequest {
+
+}
+
+message EndAuthorshipResponse {
+
+}
+
+service Chronicle {
+  rpc create_timeline(CreateTimelineRequest)returns (CreateTimelineResponse);
+  rpc begin_authorship(BeginAuthorshipRequest) returns (BeginAuthorshipResponse);
+  rpc drop_timeline(DropTimelineRequest) returns (DropTimelineResponse);
+  rpc end_authorship(EndAuthorshipRequest) returns (EndAuthorshipResponse);
+  rpc record(stream RecordEventsRequest) returns (stream RecordEventsResponse);
+  rpc follow(stream FetchEventsRequest) returns (stream FetchEventsResponse);
 }
