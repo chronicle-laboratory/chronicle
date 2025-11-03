@@ -56,11 +56,20 @@ message EndAuthorshipResponse {
 
 }
 
+message DescribeTimelineRequest {
+
+}
+
+message DescribeTimelineResponse {
+
+}
+
 service Chronicle {
-  rpc create_timeline(CreateTimelineRequest)returns (CreateTimelineResponse);
-  rpc begin_authorship(BeginAuthorshipRequest) returns (BeginAuthorshipResponse);
-  rpc drop_timeline(DropTimelineRequest) returns (DropTimelineResponse);
-  rpc end_authorship(EndAuthorshipRequest) returns (EndAuthorshipResponse);
-  rpc record(stream RecordEventsRequest) returns (stream RecordEventsResponse);
-  rpc follow(stream FetchEventsRequest) returns (stream FetchEventsResponse);
+  rpc CreateTimeline(CreateTimelineRequest)returns (CreateTimelineResponse);
+  rpc DescribeTimeline(DescribeTimelineRequest) returns (DescribeTimelineResponse);
+  rpc BeginAuthorship(BeginAuthorshipRequest) returns (BeginAuthorshipResponse);
+  rpc DropTimeline(DropTimelineRequest) returns (DropTimelineResponse);
+  rpc EndAuthorship(EndAuthorshipRequest) returns (EndAuthorshipResponse);
+  rpc Record(stream RecordEventsRequest) returns (stream RecordEventsResponse);
+  rpc Follow(stream FetchEventsRequest) returns (stream FetchEventsResponse);
 }

@@ -57,9 +57,9 @@ message SnapshotChunk {
 
 service Metadata {
 
-  rpc mail_post(stream MailPostChunk) returns(MailPostSummary);
+  rpc MailPost(stream MailPostChunk) returns(MailPostSummary);
 
-  rpc load_snapshot(SnapshotRequest) returns (stream SnapshotChunk);
+  rpc LoadSnapshot(SnapshotRequest) returns (stream SnapshotChunk);
 }
 
 // =============================================
