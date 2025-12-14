@@ -7,4 +7,6 @@ pub struct Log {
     inner: Arc<Inner>,
 }
 
-impl Log {}
+impl Log {
+    
+}

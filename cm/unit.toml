@@ -1,0 +1,17 @@
+[meta]
+id = 0
+bind_address = "127.0.0.1:7071"
+peers = [
+]
+
+[storage]
+#dir = ""
+
+[wal]
+#dir = ""
+
+[server]
+bind_address = "127.0.0.1:7070"
+
+[log]
+level = "info"
