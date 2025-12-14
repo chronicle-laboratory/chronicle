@@ -13,7 +13,6 @@ use memberlist::proto::{MaybeResolvedAddress, Meta, NodeState};
 use memberlist::tokio::{TokioRuntime, TokioTcp, TokioTcpMemberlist};
 use memberlist::{Memberlist, Options};
 use prost::Message;
-use std::fmt::format;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -25,9 +24,7 @@ struct MetadataDelegation {
 impl NodeDelegate for MetadataDelegation {
     async fn node_meta(&self, limit: usize) -> Meta {
         let result = Meta::try_from(
-            UnitMeta {
-                bootstrap_partition: self.metadata_state.has_bootstrap_partition(),
-            }
+            UnitMeta { }
             .encode_to_vec(),
         );
         if result.is_err() {
@@ -86,8 +83,8 @@ struct Inner {
 pub struct NodeAwareOptions {
     pub _self: Node<NodeId, SocketAddr>,
     pub peers: Vec<Node<NodeId, SocketAddr>>,
-    pub net: NetTransportOptions<NodeId, DnsResolver<TokioRuntime>, Tcp<TokioRuntime>>,
 }
+
 #[derive(Clone)]
 pub struct NodeAware {
     inner: Arc<Inner>,

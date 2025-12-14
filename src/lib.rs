@@ -11,10 +11,10 @@ pub mod pb_storage {
     include!(concat!(env!("OUT_DIR"), "/pb_storage.rs"));
 }
 mod banner;
-mod error;
-mod log;
+pub mod cm;
+pub mod error;
 mod metadata;
-mod provider;
 mod service;
 mod storage;
 pub mod unit;
+mod wal;

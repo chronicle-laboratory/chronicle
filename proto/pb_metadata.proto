@@ -6,7 +6,7 @@ package pb_metadata;
 // ---------------- Node Aware  ----------------
 
 message UnitMeta {
-  bool bootstrap_partition = 1;
+
 }
 
 message UnitInfo {
@@ -17,49 +17,3 @@ message UnitInfo {
 message Unit {
 
 }
-
-// =============================================
-
-// -------------- State Machine  ---------------
-
-
-message Entry {
-
-}
-
-
-message MailPostChunk {
-  uint64 partition_id = 1;
-  repeated bytes payloads = 2;
-}
-
-message MailPostSummary {
-
-}
-
-message SnapshotData {
-  uint64 id = 1;
-  uint64 from = 2;
-}
-
-message SnapshotRequest {
-  uint64 partition_id = 1;
-  uint64 snapshot_id = 2;
-}
-
-message SnapshotChunk {
-  string name = 1;
-  uint32 index = 2;
-  uint32 total = 3;
-  bytes payload = 4;
-}
-
-
-service Metadata {
-
-  rpc MailPost(stream MailPostChunk) returns(MailPostSummary);
-
-  rpc LoadSnapshot(SnapshotRequest) returns (stream SnapshotChunk);
-}
-
-// =============================================

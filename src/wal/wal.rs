@@ -1,12 +1,22 @@
+use crate::error::unit_error::UnitError;
 use std::sync::Arc;
 
 struct Inner {}
 
 #[derive(Clone)]
-pub struct Log {
+pub struct Wal {
     inner: Arc<Inner>,
 }
 
-impl Log {
-    
+pub struct WalOptions {
+    pub dir: String,
+}
+
+impl Wal {
+    pub fn new(options: WalOptions) -> Result<Wal, UnitError> {
+        let inner = Inner {};
+        Ok(Wal {
+            inner: Arc::new(inner),
+        })
+    }
 }
