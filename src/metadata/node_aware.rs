@@ -4,7 +4,7 @@ use crate::metadata::decode_id;
 use crate::metadata::metadata::MetadataState;
 use crate::pb_metadata::UnitMeta;
 use hyper::body::Bytes;
-use log::error;
+use log::{error, info};
 use memberlist::delegate::{CompositeDelegate, EventDelegate, NodeDelegate, VoidDelegate};
 use memberlist::net::resolver::dns::DnsResolver;
 use memberlist::net::stream_layer::tcp::Tcp;
@@ -23,10 +23,7 @@ struct MetadataDelegation {
 
 impl NodeDelegate for MetadataDelegation {
     async fn node_meta(&self, limit: usize) -> Meta {
-        let result = Meta::try_from(
-            UnitMeta { }
-            .encode_to_vec(),
-        );
+        let result = Meta::try_from(UnitMeta {}.encode_to_vec());
         if result.is_err() {
             error!("Node meta exceeds the limit");
             return Meta::default();
@@ -116,6 +113,8 @@ impl NodeAware {
             Some(node_addr) => Ok(node_addr),
         }
     }
+
+    pub(crate) async fn stop(self) {}
 }
 
 async fn join_node_aware_group(

@@ -2,6 +2,7 @@ use crate::error::unit_error::UnitError;
 use crate::metadata::node_aware::{NodeAware, NodeAwareOptions};
 use crate::storage::storage::Storage;
 use dashmap::DashMap;
+use log::info;
 use memberlist::net::{HostAddr, NetTransportOptions, Node, NodeId};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -47,5 +48,13 @@ impl Metadata {
         };
 
         Ok(metadata)
+    }
+
+    pub async fn stop(self) {
+        info!("closing metadata");
+
+        self.node_aware.stop().await;
+
+        info!("closed metadata");
     }
 }

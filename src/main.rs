@@ -34,7 +34,7 @@ async fn main() {
         .with_target(true)
         .init();
 
-    let unit = Unit::new(options)
+    let ut = Unit::new(options)
         .await
         .expect("failed to start chronicle unit");
 
@@ -47,5 +47,8 @@ async fn main() {
         _ = sigterm.recv() => {}
     }
 
-    info!("receive the signal, terminating unit process.. ")
+    info!("receive the signal, terminating unit process.. ");
+
+    ut.stop().await;
+
 }

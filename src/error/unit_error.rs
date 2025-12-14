@@ -13,4 +13,8 @@ pub enum UnitError {
 
     #[error("Storage error: {0}")]
     Storage(String),
+
+
+    #[error("Task error: {0}")]
+    TaskError(String)
 }
