@@ -1,5 +1,4 @@
 use crate::error::unit_error::UnitError;
-use crate::metadata::node_aware::{NodeAware, NodeAwareOptions};
 use crate::storage::storage::Storage;
 use dashmap::DashMap;
 use log::info;
@@ -21,7 +20,6 @@ impl MetadataState {
 #[derive(Clone)]
 pub struct Metadata {
     state: Arc<MetadataState>,
-    node_aware: NodeAware,
 }
 
 pub struct MetadataOptions {
@@ -37,13 +35,6 @@ impl Metadata {
         });
         let metadata = Metadata {
             state: metadata_state.clone(),
-            node_aware: NodeAware::new(
-                NodeAwareOptions {
-                    _self: options._self,
-                    peers: options.peers,
-                },
-                metadata_state,
-            )
             .await?,
         };
 
