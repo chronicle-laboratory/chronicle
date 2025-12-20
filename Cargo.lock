@@ -675,6 +675,20 @@ dependencies = [
 [[package]]
 name = "chronicle"
 version = "0.1.0"
+
+[[package]]
+name = "chronicle-proto"
+version = "0.1.0"
+dependencies = [
+ "prost 0.13.5",
+ "prost-types 0.14.1",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
+name = "chronicled"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "backoff",

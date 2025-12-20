@@ -1,75 +1,24 @@
 syntax = "proto3";
 
-
-package pb_external;
-
-
-
-message CreateTimelineRequest{
-
-}
-
-message CreateTimelineResponse {
-
-}
+package io.chronicle.proto.v1;
 
 message FetchEventsRequest {
-
+  uint64 timeline_id = 1;
 }
 
 message FetchEventsResponse {
-
+  uint64 timeline_id = 1;
 }
 
-
 message RecordEventsRequest {
-
+  uint64 timeline_id = 1;
 }
 
 message RecordEventsResponse {
-
-}
-
-message DropTimelineRequest {
-
-}
-
-message DropTimelineResponse {
-
-}
-
-
-message BeginAuthorshipRequest {
-
-}
-
-
-message BeginAuthorshipResponse {
-
-}
-
-message EndAuthorshipRequest {
-
-}
-
-message EndAuthorshipResponse {
-
-}
-
-message DescribeTimelineRequest {
-
-}
-
-message DescribeTimelineResponse {
-
+  uint64 timeline_id = 1;
 }
 
 service Chronicle {
-  rpc CreateTimeline(CreateTimelineRequest)returns (CreateTimelineResponse);
-  rpc DescribeTimeline(DescribeTimelineRequest) returns (DescribeTimelineResponse);
-  rpc BeginAuthorship(BeginAuthorshipRequest) returns (BeginAuthorshipResponse);
-  rpc DropTimeline(DropTimelineRequest) returns (DropTimelineResponse);
-  rpc EndAuthorship(EndAuthorshipRequest) returns (EndAuthorshipResponse);
   rpc Record(stream RecordEventsRequest) returns (stream RecordEventsResponse);
   rpc Follow(stream FetchEventsRequest) returns (stream FetchEventsResponse);
 }
