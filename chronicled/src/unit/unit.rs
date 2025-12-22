@@ -2,8 +2,8 @@ use crate::banner::print_banner;
 use crate::cm::unit_options::UnitOptions;
 use crate::error::unit_error::UnitError;
 use crate::error::unit_error::UnitError::TaskError;
-use crate::metadata::encode_id;
-use crate::metadata::metadata::{Metadata, MetadataOptions};
+use crate::catalog::encode_id;
+use crate::catalog::metadata::{Metadata, MetadataOptions};
 use crate::storage::storage::{Storage, StorageOptions};
 use crate::wal::wal::{Wal, WalOptions};
 use log::error;
@@ -37,7 +37,7 @@ impl Unit {
         let wal_dir = options.wal.dir.clone();
         let wal = Wal::new(WalOptions { dir: wal_dir })?;
 
-        info!("starting the metadata store...");
+        info!("starting the catalog store...");
         let unit_id = encode_id(options.meta.id);
         let meta_bind_address = options.meta.bind_address;
         let node = Node::new(unit_id, meta_bind_address);

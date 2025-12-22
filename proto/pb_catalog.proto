@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package io.chronicle.proto.catalog.v1;
+
+
+enum UnitMode {
+  ALL = 0;
+  WRITE_READ = 1;
+  READONLY = 2;
+}
+
+
+message Unit {
+  string endpoint = 1;
+  string cookie = 2;
+  map<string, string> meta = 3;
+}
+
+message TimelineVerse {
+  map<string, uint64> timelines = 1;
+  map<string, string> metadata = 2;
+}
+
+message Timeline {
+
+}
+
+message TimelineVerseCursor {
+  map<string, string> metadata = 1;
+  map<uint64, uint64> commit_offsets = 2;
+}

@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package io.chronicle.proto.v1;
+package io.chronicle.proto.ext.v1;
 
 message FetchEventsRequest {
   uint64 timeline_id = 1;

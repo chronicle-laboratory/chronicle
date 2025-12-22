@@ -1,7 +1,6 @@
 syntax = "proto3";
 
-
-package pb_storage;
+package io.chronicle.proto.storage.v1;
 
 
 message Record {

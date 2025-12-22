@@ -5,10 +5,10 @@ fn main() {
         .compile_protos(
             &[
                 "pb_external.proto",
-                "pb_metadata.proto",
                 "pb_storage.proto",
+                "pb_catalog.proto"
             ],
-            &["proto"],
+            &[""],
         )
         .unwrap();
 }

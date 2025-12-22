@@ -1,6 +1,8 @@
 [workspace]
+resolver = "3"
 members = [
     "proto",
+    "catalog",
     "chronicled",
     "chronicles/sdk-rs"
 ]
@@ -9,7 +11,7 @@ members = [
 
 
 [workspace.dependencies]
-proto = { path = "./proto" }
+chronicle-proto = { path = "./proto" }
 chronicled = { path = "./chronicled" }
 chronicles = { path = "./chronicles" }
 
