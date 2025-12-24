@@ -1,8 +1,6 @@
-[meta]
-id = 0
-bind_address = "127.0.0.1:7071"
-peers = [
-]
+[catalog]
+provider = "oxia"
+address = ""
 
 [storage]
 #dir = ""

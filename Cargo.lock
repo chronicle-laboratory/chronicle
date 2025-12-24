@@ -677,17 +677,7 @@ name = "chronicle"
 version = "0.1.0"
 
 [[package]]
-name = "chronicle-proto"
-version = "0.1.0"
-dependencies = [
- "prost 0.13.5",
- "prost-types 0.14.1",
- "tonic",
- "tonic-build",
-]
-
-[[package]]
-name = "chronicled"
+name = "chronicle-catalog"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -726,16 +716,28 @@ dependencies = [
 ]
 
 [[package]]
-name = "chronicled-catalog"
+name = "chronicle-proto"
+version = "0.1.0"
+dependencies = [
+ "prost 0.13.5",
+ "prost-types 0.14.1",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
+name = "chronicled"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "backoff",
  "backon",
+ "chronicle-catalog",
  "chronicle-proto",
  "clap",
  "crossbeam-channel",
  "dashmap",
+ "handle",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -1432,6 +1434,12 @@ dependencies = [
  "tokio-util",
  "tracing",
 ]
+
+[[package]]
+name = "handle"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52ed72152641d513a6084a3907bfcba3f35ae2d3335c22ce2242969c25ff8e46"
 
 [[package]]
 name = "hardware-address"

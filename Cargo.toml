@@ -12,6 +12,7 @@ members = [
 
 [workspace.dependencies]
 chronicle-proto = { path = "./proto" }
+chronicle-catalog = { path = "./catalog" }
 chronicled = { path = "./chronicled" }
 chronicles = { path = "./chronicles" }
 
