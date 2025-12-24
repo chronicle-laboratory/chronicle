@@ -2,7 +2,8 @@ use crate::storage::storage::Storage;
 use crate::wal::wal::Wal;
 use chronicle_proto::pb_ext::chronicle_server::Chronicle;
 use chronicle_proto::pb_ext::{
-    FetchEventsRequest, FetchEventsResponse, RecordEventsRequest, RecordEventsResponse,
+    FenceRequest, FenceResponse, FetchEventsRequest, FetchEventsResponse, RecordEventsRequest,
+    RecordEventsResponse, TrimRequest, TrimResponse,
 };
 use tonic::codegen::BoxStream;
 use tonic::{Request, Response, Status, Streaming};
@@ -32,12 +33,23 @@ impl Chronicle for UnitService {
         todo!()
     }
 
-    type FollowStream = BoxStream<FetchEventsResponse>;
+    type FetchStream = BoxStream<FetchEventsResponse>;
 
-    async fn follow(
+    async fn fetch(
         &self,
         request: Request<Streaming<FetchEventsRequest>>,
-    ) -> Result<Response<Self::FollowStream>, Status> {
+    ) -> Result<Response<Self::FetchStream>, Status> {
+        todo!()
+    }
+
+    async fn fence(
+        &self,
+        request: Request<FenceRequest>,
+    ) -> Result<Response<FenceResponse>, Status> {
+        todo!()
+    }
+
+    async fn trim(&self, request: Request<TrimRequest>) -> Result<Response<TrimResponse>, Status> {
         todo!()
     }
 }
