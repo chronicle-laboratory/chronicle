@@ -1,8 +1,4 @@
 syntax = "proto3";
 
 package io.chronicle.proto.storage.v1;
-
-
-message Record {
-
-}
+import "pb_external.proto";

@@ -5,6 +5,9 @@ use thiserror::Error;
 pub enum UnitError {
     #[error("Catalog operation failed: {0}")]
     Catalog(#[from] CatalogError),
+
+    #[error("Resource is unavailable: {0}")]
+    Unavailable(String),
     #[error("Transport error: {0}")]
     Transport(String),
     #[error("Codec error: {0}")]

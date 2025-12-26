@@ -3,11 +3,7 @@ fn main() {
         .build_client(true)
         .build_server(true)
         .compile_protos(
-            &[
-                "pb_external.proto",
-                "pb_storage.proto",
-                "pb_catalog.proto"
-            ],
+            &["pb_external.proto", "pb_storage.proto", "pb_catalog.proto"],
             &[""],
         )
         .unwrap();

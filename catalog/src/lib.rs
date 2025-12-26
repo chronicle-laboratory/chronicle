@@ -11,8 +11,6 @@ pub struct CatalogOptions {
     pub address: String,
 }
 
-
-
 pub async fn new_catalog(options: CatalogOptions) -> Result<Box<dyn Catalog>, CatalogError> {
     let catalog = MemoryCatalog::new(options).await?;
     Ok(Box::new(catalog))
