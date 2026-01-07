@@ -4,7 +4,7 @@ use async_stream::stream;
 use futures_util::Stream;
 
 pub enum ReaderType {
-    Full,
+    Offset,
     SecondaryOffset,
 }
 

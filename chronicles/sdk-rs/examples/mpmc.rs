@@ -32,7 +32,7 @@ async fn main() {
             String::from("reader-1"),
             ParallelTimelineReaderOptions {
                 cursor_name: Some(String::from("cursor-1")),
-                reader_type: ReaderType::Full,
+                reader_type: ReaderType::Offset,
                 secondary_offset_name: None,
             },
         )
@@ -44,7 +44,7 @@ async fn main() {
             String::from("reader-2"),
             ParallelTimelineReaderOptions {
                 cursor_name: Some(String::from("cursor-1")),
-                reader_type: ReaderType::Full,
+                reader_type: ReaderType::Offset,
                 secondary_offset_name: None,
             },
         )
