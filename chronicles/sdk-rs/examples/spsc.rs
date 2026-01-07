@@ -1,6 +1,6 @@
 use chronicle::chronicle::{Chronicle, ChronicleOptions};
 use chronicle::parallel_timeline::ParallelTimelineOptions;
-use chronicle::parallel_timeline_reader::{ParallelTimelineReaderOptions, ReaderType};
+use chronicle::parallel_timeline_reader::{ParallelTimelineReaderOptions, ReadType};
 use chronicle::{Acknowledgeable, Appendable, Fetchable};
 
 #[tokio::main]
@@ -23,7 +23,7 @@ async fn main() {
             String::from("reader"),
             ParallelTimelineReaderOptions {
                 cursor_name: Some(String::from("cursor-1")),
-                reader_type: ReaderType::Offset,
+                read_type: ReadType::Offset,
                 secondary_offset_name: None,
             },
         )

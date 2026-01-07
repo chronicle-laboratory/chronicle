@@ -1,20 +1,27 @@
 use crate::errors::ChronicleError;
+use crate::errors::ChronicleError::Unsupported;
 use crate::{Acknowledgeable, Fetchable, Offset, Seekable};
 use async_stream::stream;
 use futures_util::Stream;
 
-pub enum ReaderType {
+#[derive(PartialEq, Debug)]
+pub enum ReadType {
     Offset,
     SecondaryOffset,
 }
 
 pub struct ParallelTimelineReaderOptions {
     pub cursor_name: Option<String>,
-    pub reader_type: ReaderType,
+    pub read_type: ReadType,
     pub secondary_offset_name: Option<String>,
 }
 
-pub struct ParallelTimelineReader {}
+pub struct ParallelTimelineReader {
+    name: String,
+    cursor_name: Option<String>,
+    read_type: ReadType,
+    secondary_offset_name: Option<String>,
+}
 
 impl ParallelTimelineReader {
     pub fn new(name: String, options: ParallelTimelineReaderOptions) -> Self {
@@ -42,6 +49,12 @@ impl Acknowledgeable for ParallelTimelineReader {
     }
 
     async fn acknowledge_to(&self, offset: Offset) -> Result<(), ChronicleError> {
+        if self.read_type == ReadType::SecondaryOffset {
+            return Err(Unsupported(format!(
+                "unsupported cumulative acknowledge for read type {:?}",
+                self.read_type
+            )));
+        }
         todo!()
     }
 }
