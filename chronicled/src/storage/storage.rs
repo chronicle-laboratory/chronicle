@@ -57,7 +57,7 @@ impl TimelineReader for Storage {
         timeline_id: i64,
         start_offset: i64,
         end_offset: i64,
-    ) -> impl Stream<Item = Vec<Event>> {
+) -> impl Stream<Item = Vec<Event>> {
         todo!()
     }
 }

@@ -46,19 +46,29 @@ impl ReadActor {
             select! {
                 _ = context.cancelled() =>  {
                     info!("bg_worker exit");
+                    break;
                 }
-                _ = mailbox_rx.recv_many(&mut inflight_read, 1024) => {
+                count = mailbox_rx.recv_many(&mut inflight_read, 1024) => {
+                    if count == 0 {
+                        info!("mailbox closed, bg_worker exit");
+                        break;
+                    }
                    'envelop_loop: for envelope in inflight_read.drain(..) {
                         let request = envelope.request;
                         let e_offset = request.end_offset;
-                        let s_offset = request.start_offset;
                         let mut stream = storage.fetch_batches(request.timeline_id, request.start_offset, request.end_offset);
 
                         let mut latest_advanced_offset = -1;
                         let mut send_first = false;
                         while let Some((offset, advanced_offset, events)) = stream.next().await {
                             latest_advanced_offset = advanced_offset;
-                            let mut res = FetchEventsResponse{code: StatusCode::Ok.into(), r#type: -1,timeline_id: request.timeline_id,event: events, advanced_offset}
+                            let mut res = FetchEventsResponse {
+                                code: StatusCode::Ok.into(),
+                                r#type: -1,
+                                timeline_id: request.timeline_id,
+                                event: events,
+                                advanced_offset,
+                            };
                             let mut no_more = false;
                             if offset != e_offset {
                                 if !send_first {
@@ -77,7 +87,6 @@ impl ReadActor {
                             }
                             if let Err(err) = envelope.res_tx.send(Ok(res)).await {
                                 warn!("Send response to the client failed. {:?}", err);
-                                _ = envelope.res_tx.try_send(Err(Status::failed_precondition(err.to_string()))); // do our best to send error
                                 continue 'envelop_loop;
                             }
                             if no_more {
@@ -85,7 +94,13 @@ impl ReadActor {
                             }
                         }
                         // if no more data
-                        let mut res = FetchEventsResponse{code: StatusCode::Ok.into(), r#type: -1, timeline_id: request.timeline_id,event: vec![], advanced_offset: latest_advanced_offset}
+                        let mut res = FetchEventsResponse {
+                            code: StatusCode::Ok.into(),
+                            r#type: -1,
+                            timeline_id: request.timeline_id,
+                            event: vec![],
+                            advanced_offset: latest_advanced_offset,
+                        };
                         if send_first {
                             // we didn't send the last
                             res.r#type = ChunkType::Last.into();
@@ -95,8 +110,6 @@ impl ReadActor {
                         }
                         if let Err(err) = envelope.res_tx.send(Ok(res)).await {
                             warn!("Send response to the client failed. {:?}", err);
-                            _ = envelope.res_tx.try_send(Err(Status::failed_precondition(err.to_string()))); // do our best to send error
-                            continue 'envelop_loop;
                         }
                    }
                 }

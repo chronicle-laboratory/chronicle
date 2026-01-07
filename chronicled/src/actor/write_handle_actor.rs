@@ -59,7 +59,8 @@ impl WriteActor {
                         let term = event.term;
                         let offset = event.offset;
                         write_cache.put_with_trunc(event, request.trunc);
-                        if let Err(err) = envelop.res_tx.try_send(Ok(Event{ timeline_id,term,offset,payload: None,crc32: None,timestamp: -1})) {
+                        if let Err(err) = envelop.res_tx.try_send(Ok(Event{timeline_id,term,offset,payload: None,crc32: None,timestamp: -1})) {
+                            // todo: improve here
                             warn!("Send response to the client failed. {:?}", err);
                         }
                     }
