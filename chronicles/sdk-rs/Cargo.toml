@@ -6,3 +6,9 @@ resolver = "3"
 
 
 [dependencies]
+chronicle-proto = { workspace = true }
+chronicle-catalog = { workspace = true }
+thiserror = { workspace = true }
+futures-util = { workspace = true }
+async-stream = { workspace = true }
+tokio = { workspace = true }

@@ -697,6 +697,14 @@ dependencies = [
 [[package]]
 name = "chronicle"
 version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "chronicle-catalog",
+ "chronicle-proto",
+ "futures-util",
+ "thiserror 2.0.17",
+ "tokio",
+]
 
 [[package]]
 name = "chronicle-catalog"
