@@ -7,7 +7,7 @@ resolver = "3"
 
 [dependencies]
 chronicle-proto = { workspace = true }
-chronicle-catalog = {workspace = true}
+chronicle-catalog = { workspace = true }
 
 clap = { workspace = true }
 async-trait = { workspace = true }
@@ -42,4 +42,6 @@ http-body-util = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }
+futures-util = { workspace = true }
+async-stream = { workspace = true }
 handle = "1.0.2"

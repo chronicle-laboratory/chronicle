@@ -1,4 +1,8 @@
 use crate::error::unit_error::UnitError;
+use crate::storage::TimelineReader;
+use crate::storage::write_cache::WriteCache;
+use chronicle_proto::pb_ext::Event;
+use futures_util::Stream;
 use rocksdb::{ColumnFamilyDescriptor, DB, DBCompressionType, LogLevel, Options};
 use std::sync::Arc;
 
@@ -40,5 +44,20 @@ impl Storage {
         Ok(Storage {
             inner: Arc::new(Inner { database: db }),
         })
+    }
+
+    pub(crate) fn fetch_write_cache(&self, index: i32) -> WriteCache {
+        todo!()
+    }
+}
+
+impl TimelineReader for Storage {
+    fn fetch_batches(
+        &self,
+        timeline_id: i64,
+        start_offset: i64,
+        end_offset: i64,
+    ) -> impl Stream<Item = Vec<Event>> {
+        todo!()
     }
 }

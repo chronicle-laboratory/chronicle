@@ -1,8 +1,12 @@
 fn main() {
+    let mut config = prost_build::Config::new();
+    config.bytes(&["."]);
+
     tonic_build::configure()
         .build_client(true)
         .build_server(true)
-        .compile_protos(
+        .compile_protos_with_config(
+            config,
             &["pb_external.proto", "pb_storage.proto", "pb_catalog.proto"],
             &[""],
         )

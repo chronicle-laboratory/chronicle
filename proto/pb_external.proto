@@ -53,12 +53,12 @@ enum ChunkType {
 message FetchEventsResponse {
   StatusCode code = 1;
   ChunkType type = 2;
-  repeated Event event = 3;
-  int64 advanced_offset = 4;
+  int64 timeline_id = 3;
+  repeated Event event = 4;
+  int64 advanced_offset = 5;
 }
 
 // batching operations
-
 message RecordEventsRequest {
   repeated RecordEventsRequestItem items = 1;
 }
@@ -72,7 +72,7 @@ message RecordEventsRequestItem {
 
 message RecordEventsResponseItem {
   StatusCode code = 1;
-  repeated Event event = 2;
+  Event event = 2;
 }
 
 service Chronicle {
