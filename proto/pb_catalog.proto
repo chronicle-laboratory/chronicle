@@ -3,22 +3,44 @@ syntax = "proto3";
 package io.chronicle.proto.catalog.v1;
 
 
+/**
+  /chron/
+  /chron/{chron_name}
+  /chron/{chron_name}/unit/
+  /chron/{chron_name}/unit/{unit_name}
+  /chron/{chron_name}/unit/stats/{unit_name}
+  /chron/{chron_name}/unit/write_read/{unit_name}
+  /chron/{chron_name}/unit/read_only/{unit_name}
+
+  /chron/{chron_name}/txn/
+  /chron/{chron_name}/txn/{txn_id}
+
+  /chron/{chron_name}/pt/{pt_name}
+
+  /chron/{chron_name}/pt/{pt_name}/tl
+
+  /chron/{chron_name}/pt/{pt_name}/tl/{tl_name}
+
+  /chron/{chron_name}/pt/{pt_name}/cs
+  /chron/{chron_name}/pt/{pt_name}/cs/{cursor_name}
+  /chron/{chron_name}/pt/{pt_name}/cs/{cursor_name}/read_pos
+  /chron/{chron_name}/pt/{pt_name}/cs/{cursor_name}/ack_pos
+  /chron/{chron_name}/pt/{pt_name}/cs/{cursor_name}/commit_pos
+ */
+
+
 enum UnitMode {
   WRITE_READ = 0;
   READONLY = 1;
 }
 
-//
-
 message Unit {
   string endpoint = 1;
   string cookie = 2;
   map<string, string> meta = 3;
-  UnitMode mode = 4;
 }
 
 message ParallelTimeline {
-  map<string, int64> timelines = 1;
   map<string, string> metadata = 2;
 }
 
@@ -29,5 +51,4 @@ message Timeline {
 
 message ParallelTimelineCursor {
   map<string, string> metadata = 1;
-  map<int64, uint64> commit_offsets = 2;
 }

@@ -1,5 +1,7 @@
 use crate::errors::CatalogError;
-use chronicle_proto::pb_catalog::{Timeline, TimelineVerse, Unit, UnitMode};
+use chronicle_proto::pb_catalog::{
+    ParallelTimeline, ParallelTimelineCursor, Timeline, Unit, UnitMode,
+};
 use std::collections::HashMap;
 
 pub type UnitId = String;
@@ -13,7 +15,9 @@ pub trait Catalog:
     ChronicleResources
     + UnitResources
     + ParallelTimelineResources
-    + TimelineVerseCursorResources
+    + TimelineResources
+    + TransactionResources
+    + ParallelTimelineCursorResources
     + Send
     + Sync
 {
@@ -42,28 +46,135 @@ pub const TIMELINE_NEW_TERM: TimelineTerm = 1;
 pub trait ParallelTimelineResources {
     async fn create_parallel_timeline(
         &self,
-        verse_name: String,
-        verse: TimelineVerse,
+        chron_name: String,
+        pt_name: String,
+        pt: ParallelTimeline,
     ) -> Result<(), CatalogError>;
     async fn delete_parallel_timeline(
         &self,
-        verse_name: String,
-        verse: TimelineVerse,
+        chron_name: String,
+        pt_name: String,
     ) -> Result<(), CatalogError>;
-
-    async fn get_parallel_timeline(&self, verse_name: String) -> Result<TimelineVerse, CatalogError>;
+    async fn get_parallel_timeline(
+        &self,
+        chron_name: String,
+        pt_name: String,
+    ) -> Result<ParallelTimeline, CatalogError>;
+    async fn list_parallel_timelines(&self, chron_name: String) -> Result<Vec<String>, CatalogError>;
 }
 
-
+#[async_trait::async_trait]
+pub trait TimelineResources {
+    async fn create_timeline(
+        &self,
+        chron_name: String,
+        pt_name: String,
+        tl_name: String,
+        timeline: Timeline,
+    ) -> Result<(), CatalogError>;
+    async fn get_timeline(
+        &self,
+        chron_name: String,
+        pt_name: String,
+        tl_name: String,
+    ) -> Result<Timeline, CatalogError>;
+    async fn list_timelines(
+        &self,
+        chron_name: String,
+        pt_name: String,
+    ) -> Result<Vec<String>, CatalogError>;
+    async fn delete_timeline(
+        &self,
+        chron_name: String,
+        pt_name: String,
+        tl_name: String,
+    ) -> Result<(), CatalogError>;
+}
 
 #[async_trait::async_trait]
-pub trait TimelineVerseCursorResources {
-    async fn create_timeline_verse_cursor(&self, verse: String) -> Result<(), CatalogError>;
-    async fn update_timeline_verse_cursor(
+pub trait TransactionResources {
+    async fn create_transaction(
         &self,
-        verse: String,
-        cursor: String,
+        chron_name: String,
+        txn_id: String,
+        metadata: HashMap<String, String>,
     ) -> Result<(), CatalogError>;
-    async fn delete_timeline_verse_cursor(&self, verse: String) -> Result<(), CatalogError>;
-    async fn advance_commit_offset(&self, offsets: HashMap<u64, u64>);
+    async fn get_transaction(
+        &self,
+        chron_name: String,
+        txn_id: String,
+    ) -> Result<HashMap<String, String>, CatalogError>;
+    async fn list_transactions(&self, chron_name: String) -> Result<Vec<String>, CatalogError>;
+    async fn delete_transaction(
+        &self,
+        chron_name: String,
+        txn_id: String,
+    ) -> Result<(), CatalogError>;
+}
+
+#[async_trait::async_trait]
+pub trait ParallelTimelineCursorResources {
+    async fn create_cursor(
+        &self,
+        chron_name: String,
+        pt_name: String,
+        cursor_name: String,
+        cursor: ParallelTimelineCursor,
+    ) -> Result<(), CatalogError>;
+    async fn get_cursor(
+        &self,
+        chron_name: String,
+        pt_name: String,
+        cursor_name: String,
+    ) -> Result<ParallelTimelineCursor, CatalogError>;
+    async fn list_cursors(
+        &self,
+        chron_name: String,
+        pt_name: String,
+    ) -> Result<Vec<String>, CatalogError>;
+    async fn delete_cursor(
+        &self,
+        chron_name: String,
+        pt_name: String,
+        cursor_name: String,
+    ) -> Result<(), CatalogError>;
+    async fn get_read_pos(
+        &self,
+        chron_name: String,
+        pt_name: String,
+        cursor_name: String,
+    ) -> Result<i64, CatalogError>;
+    async fn set_read_pos(
+        &self,
+        chron_name: String,
+        pt_name: String,
+        cursor_name: String,
+        pos: i64,
+    ) -> Result<(), CatalogError>;
+    async fn get_ack_pos(
+        &self,
+        chron_name: String,
+        pt_name: String,
+        cursor_name: String,
+    ) -> Result<i64, CatalogError>;
+    async fn set_ack_pos(
+        &self,
+        chron_name: String,
+        pt_name: String,
+        cursor_name: String,
+        pos: i64,
+    ) -> Result<(), CatalogError>;
+    async fn get_commit_pos(
+        &self,
+        chron_name: String,
+        pt_name: String,
+        cursor_name: String,
+    ) -> Result<i64, CatalogError>;
+    async fn set_commit_pos(
+        &self,
+        chron_name: String,
+        pt_name: String,
+        cursor_name: String,
+        pos: i64,
+    ) -> Result<(), CatalogError>;
 }
