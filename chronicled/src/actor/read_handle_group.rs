@@ -17,7 +17,7 @@ impl ReadHandleGroup {
         // init actors container
         for index in 0..actor_num {
             let actor = ReadActor::new(index as i32, inflight_per_actor, storage.clone());
-            actors[index] = actor
+            actors.push(actor);
         }
 
         Self {
@@ -31,16 +31,11 @@ impl ReadHandleGroup {
         &self,
         envelope: Envelope<FetchEventsRequest, FetchEventsResponse, Status>,
     ) -> Result<(), Status> {
-        match &envelope.request {
-            Some(event) => {
-                let idx = (event.timeline_id & self.actor_id_mask) as usize;
-                self.actors[idx]
-                    .send(envelope)
-                    .await
-                    .map_err(|_| Status::unavailable("write handle actor is unavailable."))?
-            }
-            _ => return Err(Status::invalid_argument("unexpect empty event.")),
-        }
-        Ok(())
+        let event = &envelope.request;
+        let idx = (event.timeline_id & self.actor_id_mask) as usize;
+        self.actors[idx]
+            .send(envelope)
+            .await
+            .map_err(|_| Status::unavailable("read handle actor is unavailable."))
     }
 }

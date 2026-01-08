@@ -24,8 +24,8 @@ pub struct WriteActor {
 impl WriteActor {
     pub fn new(index: i32, inflight_num: usize, wal: Wal, storage: Storage) -> Self {
         let context = CancellationToken::new();
-        let (mailbox_tx, mut mailbox_rx) = tokio::sync::mpsc::channel(inflight_num);
-        let wc = storage.fetch_write_cache(index);
+        let (mailbox_tx, mailbox_rx) = tokio::sync::mpsc::channel(inflight_num);
+        let wc = storage.fetch_write_cache();
         let handle = tokio::spawn(Self::bg_worker(context.clone(), mailbox_rx, wal, wc));
         Self {
             context,
@@ -58,7 +58,9 @@ impl WriteActor {
                         let timeline_id = event.timeline_id;
                         let term = event.term;
                         let offset = event.offset;
-                        write_cache.put_with_trunc(event, request.trunc);
+                        if let Err(e) = write_cache.put_with_trunc(event, request.trunc) {
+                            warn!("Failed to write to storage: {:?}", e);
+                        }
                         if let Err(err) = envelop.res_tx.try_send(Ok(Event{timeline_id,term,offset,payload: None,crc32: None,timestamp: -1})) {
                             // todo: improve here
                             warn!("Send response to the client failed. {:?}", err);
@@ -67,19 +69,24 @@ impl WriteActor {
                 }
                 _ = mailbox_rx.recv_many(&mut inflight_append, 1024) => {
                    for envelope in inflight_append.drain(..) {
-                    let record_events_request_item = &envelope.request;
-                        let bytes = BytesMut::new()
-
-                        bytes.chain(record_events_request_item.event.unwrap().payload)
-                        match wal.append(bytes).await {
-                        Ok(offset) => {
-                            inflight_synced.push_back((offset, envelope));
-                        }
-                        Err(error) => {
-                             if let Err(err) =  envelope.res_tx.try_send(Err(Status::internal(error.to_string()))) {
-                                warn!("Send response to the client failed. {:?}", err);
+                        let record_events_request_item = &envelope.request;
+                        if let Some(event) = &record_events_request_item.event {
+                            if let Some(payload) = &event.payload {
+                                match wal.append(payload.to_vec()).await {
+                                    Ok(offset) => {
+                                        inflight_synced.push_back((offset, envelope));
+                                    }
+                                    Err(error) => {
+                                        if let Err(err) = envelope
+                                            .res_tx
+                                            .try_send(Err(Status::internal(error.to_string())))
+                                        {
+                                            warn!("Send response to the client failed. {:?}", err);
+                                        }
+                                    }
+                                }
                             }
-                        }}
+                        }
                     }
                 }
             }

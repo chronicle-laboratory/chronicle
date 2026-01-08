@@ -36,7 +36,7 @@ impl Unit {
 
         info!("loading the write ahead log...");
         let wal_dir = options.wal.dir.clone();
-        let write_ahead_log = Wal::new(WalOptions { dir: wal_dir })?;
+        let write_ahead_log = Wal::new(WalOptions { dir: wal_dir }).await?;
 
         info!("starting the catalog...");
         let catalog = Arc::new(
@@ -49,7 +49,7 @@ impl Unit {
 
         let server_options = options.server.clone();
 
-        let unit_service = UnitService::new(storage.clone(), write_ahead_log.clone());
+        let unit_service = UnitService::new(storage.clone(), write_ahead_log.clone(), catalog.clone());
         let external_handle =
             bg_start_external_service(server_options, context.clone(), unit_service);
         let prometheus_handle = bg_start_prometheus_service();

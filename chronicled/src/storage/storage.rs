@@ -3,14 +3,15 @@ use crate::storage::TimelineReader;
 use crate::storage::write_cache::WriteCache;
 use chronicle_proto::pb_ext::Event;
 use futures_util::Stream;
+use prost::Message;
 use rocksdb::{ColumnFamilyDescriptor, DB, DBCompressionType, LogLevel, Options};
 use std::sync::Arc;
 
-const CF_META: &str = "meta";
-const CF_IDX: &str = "idx";
+pub const CF_META: &str = "meta";
+pub const CF_IDX: &str = "idx";
 
-struct Inner {
-    database: DB,
+pub struct Inner {
+    pub database: DB,
 }
 
 #[derive(Clone)]
@@ -46,8 +47,8 @@ impl Storage {
         })
     }
 
-    pub(crate) fn fetch_write_cache(&self, index: i32) -> WriteCache {
-        todo!()
+    pub(crate) fn fetch_write_cache(&self) -> WriteCache {
+        WriteCache::new(self.inner.clone())
     }
 }
 
@@ -57,7 +58,70 @@ impl TimelineReader for Storage {
         timeline_id: i64,
         start_offset: i64,
         end_offset: i64,
-) -> impl Stream<Item = Vec<Event>> {
-        todo!()
+    ) -> impl Stream<Item = (i64, i64, Vec<Event>)> {
+        let inner = self.inner.clone();
+        async_stream::stream! {
+            let cf = match inner.database.cf_handle(CF_IDX) {
+                Some(cf) => cf,
+                None => {
+                    // Log error, column family not found
+                    return;
+                }
+            };
+
+            let start_key = format!("{}-{}", timeline_id, start_offset);
+            let mut iter = inner.database.iterator_cf(&cf, rocksdb::IteratorMode::From(start_key.as_bytes(), rocksdb::Direction::Forward));
+
+            let mut current_batch = Vec::new();
+            let mut last_offset = start_offset;
+
+            for item in iter {
+                match item {
+                    Ok((key, value)) => {
+                        let key_str = String::from_utf8_lossy(&key);
+                        let parts: Vec<&str> = key_str.split('-').collect();
+                        if parts.len() != 2 {
+                            continue;
+                        }
+                        let key_timeline_id: i64 = match parts[0].parse() {
+                            Ok(id) => id,
+                            Err(_) => continue,
+                        };
+                        let key_offset: i64 = match parts[1].parse() {
+                            Ok(offset) => offset,
+                            Err(_) => continue,
+                        };
+
+                        if key_timeline_id != timeline_id || key_offset > end_offset {
+                            break;
+                        }
+
+                        match Event::decode(&*value) {
+                            Ok(event) => {
+                                last_offset = event.offset;
+                                current_batch.push(event);
+                                if current_batch.len() >= 100 { // Batch size
+                                    yield (last_offset, last_offset, std::mem::take(&mut current_batch));
+                                }
+                            }
+                            Err(e) => {
+                                // Log decoding error
+                                eprintln!("Failed to decode event: {:?}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        // Log db error
+                        eprintln!("RocksDB iterator error: {:?}", e);
+                        break;
+                    }
+                }
+            }
+
+            if !current_batch.is_empty() {
+                yield (last_offset, last_offset, current_batch);
+            }
+        }
     }
 }
+

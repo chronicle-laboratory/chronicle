@@ -42,6 +42,7 @@ http-body-util = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }
+tokio-stream = { workspace = true }
 futures-util = { workspace = true }
 async-stream = { workspace = true }
 handle = "1.0.2"

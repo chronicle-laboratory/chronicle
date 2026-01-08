@@ -12,7 +12,7 @@ pub const UNIT_MODE_READONLY_PREFIX: &str = "/chronicle/units/status/readonly/";
 pub trait Catalog:
     ChronicleResources
     + UnitResources
-    + TimelineVerseResources
+    + ParallelTimelineResources
     + TimelineVerseCursorResources
     + Send
     + Sync
@@ -39,31 +39,22 @@ pub type TimelineTerm = u64;
 pub const TIMELINE_NEW_TERM: TimelineTerm = 1;
 
 #[async_trait::async_trait]
-pub trait TimelineVerseResources {
-    async fn create_timeline_verse(
+pub trait ParallelTimelineResources {
+    async fn create_parallel_timeline(
         &self,
         verse_name: String,
         verse: TimelineVerse,
     ) -> Result<(), CatalogError>;
-    async fn delete_timeline_verse(
+    async fn delete_parallel_timeline(
         &self,
         verse_name: String,
         verse: TimelineVerse,
     ) -> Result<(), CatalogError>;
 
-    async fn get_timeline_verse(&self, verse_name: String) -> Result<TimelineVerse, CatalogError>;
-    async fn open_timeline(&self, verse_name: String, timeline_id: TimelineId, term: TimelineTerm);
-    async fn get_timeline(
-        &self,
-        verse_name: String,
-        timeline_id: TimelineId,
-    ) -> Result<Timeline, CatalogError>;
-    async fn destroy_timeline(
-        &self,
-        verse_name: String,
-        timeline_id: TimelineId,
-    ) -> Result<(), CatalogError>;
+    async fn get_parallel_timeline(&self, verse_name: String) -> Result<TimelineVerse, CatalogError>;
 }
+
+
 
 #[async_trait::async_trait]
 pub trait TimelineVerseCursorResources {
