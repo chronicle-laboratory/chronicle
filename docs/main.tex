@@ -1,0 +1,85 @@
+\documentclass[
+    a4paper,
+    11pt,
+    DIV=12,
+    parskip=half,
+    openany
+]{scrbook}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{mathpazo}
+\usepackage[scaled=0.95]{helvet}
+\usepackage{microtype}
+
+\usepackage{xcolor}
+\definecolor{bookblue}{RGB}{0, 60, 120}
+
+\usepackage[
+    colorlinks=true,
+    linkcolor=bookblue,
+    urlcolor=bookblue,
+    citecolor=bookblue
+]{hyperref}
+
+\addtokomafont{chapter}{\color{bookblue}\huge}
+\addtokomafont{section}{\color{bookblue}}
+
+\usepackage{listings}
+\usepackage{mdframed}
+\definecolor{codebg}{gray}{0.95}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    backgroundcolor=\color{codebg},
+    keywordstyle=\bfseries\color{blue!60!black},
+    commentstyle=\color{green!40!black},
+    stringstyle=\color{orange!50!black},
+    breaklines=true,
+    frame=none,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    xleftmargin=1em,
+}
+
+\surroundwithmdframed[
+    hidealllines=true,
+    backgroundcolor=codebg,
+    roundcorner=5pt,
+    innerleftmargin=10pt,
+    innerrightmargin=10pt,
+    innertopmargin=10pt,
+    innerbottommargin=10pt
+]{lstlisting}
+
+\usepackage[automark]{scrlayer-scrpage}
+\clearpairofpagestyles
+\ohead{\headmark}
+\ofoot{\pagemark}
+\cfoot{}
+\setkomafont{pagehead}{\normalfont\sffamily\color{gray}}
+
+\begin{document}
+
+\frontmatter
+\title{\textbf{\Huge Chronicle - Distributed State Machine}}
+\subtitle{The documentation and design proposal}
+\author{\Large Chronicle Community}
+\maketitle
+
+\tableofcontents
+
+\chapter*{Preface}
+This book documents the design principles behind distributed state machine
+
+\mainmatter
+
+\chapter{What is Chronicle}
+
+\section{Concept}
+
+\appendix
+\chapter{Reference}
+See the official Pulsar documentation for more details.
+
+\end{document}

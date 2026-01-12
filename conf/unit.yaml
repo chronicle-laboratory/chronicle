@@ -1,0 +1,16 @@
+catalog:
+  provider: "oxia"
+  address: ""
+storage:
+  dir: ""
+wal:
+  dir: ""
+server:
+  bindAddress: "127.0.0.1:7070"
+observability:
+  metric:
+    bindAddress: "127.0.0.1:9090"
+  log:
+    level: "info"
+    format: "text"
+
