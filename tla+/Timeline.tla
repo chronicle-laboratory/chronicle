@@ -1,6 +1,7 @@
 --------- MODULE Timeline -----------
 EXTENDS FiniteSets, Sequences, Integers, TLC
 
+
 CONSTANTS
     \* messages
     RecordEventsRequest,
@@ -49,7 +50,9 @@ VARIABLES
     \* timelines
     timelines,
     sent_events,
-    acked_events
+    acked_events,
+    channel
+
 
 ASSUME TimelineWQ \in Nat /\ TimelineWQ > 0
 ASSUME TimelineAQ \in Nat /\ TimelineAQ > 0
@@ -59,6 +62,51 @@ ASSUME Cardinality(Events) + Cardinality(Timelines) >= 1
 
 timeline_variables == << unit_timeline_event_records, unit_timeline_lac, unit_timeline_lafc, unit_timeline_term >>
 catalog_variables == << catalog_timeline_term, catalog_timeline_segments, catalog_timeline_status, catalog_timeline_type, catalog_timeline_version >>
+
+
+(**
+    protocol
+**)
+
+ReqFence(timeline, ensemble, term) ==
+    {
+        [
+            type         |-> FenceRequest,
+            unit         |-> unit,
+            timeline_id  |-> timeline.id,
+            term         |-> term
+        ] : uint \in ensemble
+    }
+
+
+(**
+    unreliable channel
+**)
+
+
+UCSendMessageToEnsemble(messages) ==
+    /\ \A message \in messages :  message \notin DOMAIN channel
+    /\ LET loss_matrix == { loss_matrix \in SUBSET (messages \X {-1, 1}) :
+                             /\ Cardinality(loss_matrix) = Cardinality(messages)
+                             /\ \A message \in messages :
+                                    \E loss_tuple \in loss_matrix : loss_tuple[1] = message }
+        IN
+            \E plan \in loss_matrix :
+                LET choosen_messages == [
+                                        message \in messages |-> LET tuple == CHOOSE tuple \in plan: tuple[1] = message IN tuple[2]
+                                    ]
+                IN
+                    channel' = channel @@ choosen_messages
+
+(*****
+    utilities function
+*****)
+FindLast(seq) == seq[Len(seq)]
+
+
+NoReconciliation == 0
+ReconciliationFencing == 1
+ReconciliationAligning == 2
 
 EventOffsets ==
     1..Cardinality(Events)
@@ -91,22 +139,32 @@ Timeline ==
         lafc                     : Nat,
         acked                    : [EventOffsets -> SUBSET Units],
         fenced                   : SUBSET Units,
+
+\*      reconciliation memory state
+        reconciliation           : NoReconciliation..ReconciliationAligning,
+        reconciliation_ensemble  : SUBSET Units,
+        reconciliation_lac       : Nat,
+        reconciliation_lafc      : Nat,
         catalog_timeline_version   : Nat \union {Null}
     ]
 
 InitTimeline(tid) ==
     [
-        id                  |-> tid,
-        term                |-> 0,
-        segments            |-> [i \in 1..0 |-> [id |-> i, ensemble |-> {}, first_entry_id |-> 1]],
-        writable_segment    |-> Null,
-        inflight_records    |-> {},
-        status              |-> Null,
-        las                 |-> 0,
-        lac                 |-> 0,
-        lafc                |-> 0,
-        acked               |-> [offset \in EventOffsets |-> {}],
-        fenced              |-> {},
+        id                      |-> tid,
+        term                    |-> 0,
+        segments                |-> [i \in 1..0 |-> [id |-> i, ensemble |-> {}, first_entry_id |-> 1]],
+        writable_segment        |-> Null,
+        inflight_records        |-> {},
+        status                  |-> Null,
+        las                     |-> 0,
+        lac                     |-> 0,
+        lafc                    |-> 0,
+        acked                   |-> [offset \in EventOffsets |-> {}],
+        fenced                  |-> {},
+        reconciliation          |-> NoReconciliation,
+        reconciliation_ensemble |-> {},
+        reconciliation_lac      |-> 0,
+        reonciliation_lafc      |-> 0,
         catalog_timeline_version |-> Null
     ]
 
@@ -127,8 +185,9 @@ IsEnsembleAvailable(available, quarantined) ==
     \E ensemble \in SUBSET Units :
         IsValidEnsemble(ensemble, available, quarantined)
 
-OpenTimeline(tid) ==
-    /\ catalog_timeline_version = 0
+OpenNewTimeline(tid) ==
+    /\ catalog_timeline_status = Null
+    /\ Timelines[tid].catalog_timeline_version = Null
     /\ LET segment == [id |-> 1, ensemble |->  FindEnsemble({}, {}), first_entry_id |-> 1]
         IN
          /\ timelines' = [
@@ -148,25 +207,36 @@ OpenTimeline(tid) ==
          /\ catalog_timeline_segments' = [i \in 1..1 |-> segment]
          /\ UNCHANGED << timeline_variables , sent_events, acked_events>>
 
-VARIABLES
-    messages
 
-DelCountOf(msg, counts) ==
-    LET pair == CHOOSE c \in counts : c[1] = msg
-    IN pair[2]
+OpenExistingTimeline(tid) ==
+    LET
+        catalog_timeline_new_term    == catalog_timeline_term +1
+        catalog_timeline_new_version == catalog_timeline_version + 1
+    IN
+    /\ timelines[tid].status = Null
+    /\ catalog_timeline_status \in {TimelineStatusOpen, TimelineStatusInRecovery}
+    /\ catalog_timeline_status' = TimelineStatusInRecovery
+    /\ catalog_timeline_version' = catalog_timeline_new_version
+    /\ catalog_timeline_term' = catalog_timeline_new_term
+    /\ timelines' = [
+                        timelines EXCEPT ![tid] = [@ EXCEPT
+                                !.status                   = TimelineStatusInRecovery,
+                                !.catalog_timeline_version = catalog_timeline_new_version,
+                                !.term                     = catalog_timeline_new_term,
+                                !.reconciliation           = ReconciliationFencing,
+                                !.segments                 = catalog_timeline_segments,
+                                !.writable_segment         = FindLast(catalog_timeline_segments),
+                                !.conciliation_ensemble    = FindLast(catalog_timeline_segments)
+                        ]
+                    ]
+    /\ UCSendMessageToEnsemble(ReqFence(timelines[tid], FindLast(catalog_timeline_segments).ensemble, catalog_timeline_new_term))
+    /\ UNCHANGED << timeline_variables, catalog_timeline_segments, sent_events, acked_events>>
 
-MessagePassingToEnsemble(msgs) ==
-    /\ \A msg \in msgs :  msg \notin DOMAIN messages
-    /\ LET possible_del_counts == {
-                                     s \in SUBSET (msgs \X {-1, 1}) :
-                                        /\ Cardinality(s) = Cardinality(msgs)
-                                        /\ \A msg \in msgs : \E s1 \in s : s1[1] = msg
-                                  }
-      IN
-        \E counts \in possible_del_counts :
-            LET msgs_to_send == [ m \in msgs |-> DelCountOf(m, counts)]
-            IN
-                messages' = messages @@ msgs_to_send
+
+OpenTimeline(tid) ==
+    \/ OpenNewTimeline(tid)
+    \/ OpenExistingTimeline(tid)
+
 
 
 RecordEventRequest(timeline, event, ensemble, recovery, trunc) ==
@@ -232,118 +302,10 @@ Init ==
     /\ sent_events = {}
     /\ acked_events = {}
 
+Next ==
+    \/ \E tid \in Timelines :
+        \/ OpenTimeline(tid)
 
-
-(***************************************************************************
-ACTION: Bookie processes a message
-****************************************************************************)
-
-BookieProcessMessage(msg) ==
-    /\ msg.type = RecordEventRequestMessage
-    /\ LET unit == msg.unit
-           entry == msg.entry
-           IN
-        /\ unit_timeline_term[unit] <= msg.term
-        /\ unit_timeline_term' = [unit_timeline_term EXCEPT ![unit] = msg.term]
-        /\ unit_timeline_event_records' = [unit_timeline_event_records EXCEPT ![unit] = 
-                                            IF msg.trunc 
-                                            THEN {e \in unit_timeline_event_records[unit] : e.id < entry.id} \union {entry}
-                                            ELSE unit_timeline_event_records[unit] \union {entry}]
-        /\ unit_timeline_lac' = [unit_timeline_lac EXCEPT ![unit] = 
-                                   IF msg.lac > @ THEN msg.lac ELSE @]
-        /\ unit_timeline_lafc' = [unit_timeline_lafc EXCEPT ![unit] = 
-                                   IF msg.lafc > @ THEN msg.lafc ELSE @]
-        /\ MessageProcessed(msg)
-        /\ UNCHANGED << catalog_variables, timelines, sent_events, acked_events, messages>>
-
-(***************************************************************************
-QUORUM CALCULATIONS
-***************************************************************************)
-
-QuorumCoverage(cohort_size, ack_set) ==
-    Cardinality(ack_set) >= ((cohort_size - TimelineAQ) + 1)
-
-HasAckQuorum(tid, entry_id) ==
-    LET t == timelines[tid]
-        IN Cardinality(t.acked[entry_id]) >= TimelineAQ
-
-HasWriteQuorum(tid, entry_id) ==
-    LET t == timelines[tid]
-        IN Cardinality(t.acked[entry_id]) >= TimelineWQ
-
-MaxContiguousEntry(tid, quorum) ==
-    LET t == timelines[tid]
-    IN
-        IF t.lac < t.las
-        THEN 
-            IF \E id \in (t.lac+1)..t.las : 
-                    \A id1 \in (t.lac+1)..id :
-                        Cardinality(t.acked[id1]) >= quorum
-            THEN 
-                CHOOSE id \in (t.lac+1)..t.las : 
-                    /\ \A id1 \in (t.lac+1)..id : 
-                        Cardinality(t.acked[id1]) >= quorum
-                    /\ ~\E other_id \in (t.lac+1)..t.las :
-                        /\ other_id > id 
-                        /\ \A other_id1 \in (t.lac+1)..other_id : 
-                            Cardinality(t.acked[other_id1]) >= quorum
-            ELSE t.lac
-        ELSE t.lac
-
-MessageProcessed(msg) ==
-    /\ messages' = [messages EXCEPT ![msg] = FALSE]
-
-(***************************************************************************
-TYPE CORRECTNESS INVARIANTS
-***************************************************************************)
-
-TypeInvariant == 
-    /\ \A tid \in Timelines : timelines[tid].id = tid
-    /\ \A u \in Units : unit_timeline_term[u] \in Nat
-    /\ \A u \in Units : unit_timeline_lac[u] \in Nat
-    /\ \A u \in Units : unit_timeline_lafc[u] \in Nat
-    /\ \A u \in Units : \A e \in unit_timeline_event_records[u] : e.id \in EventOffsets /\ e.data \in Events \union {Null}
-
-(***************************************************************************
-SAFETY INVARIANTS
-***************************************************************************)
-
-MonotonicTerms ==
-    \A tid \in Timelines : 
-        /\ timelines[tid].term \in Nat
-        /\ \A u \in Units : unit_timeline_term[u] >= 0
-
-ValidEnsembleComposition ==
-    \A tid \in Timelines :
-        /\ \A i \in DOMAIN timelines[tid].segments :
-            Cardinality(timelines[tid].segments[i].ensemble) = TimelineWQ
-
-NoOrphanedEntries ==
-    \A u \in Units :
-        \A e \in unit_timeline_event_records[u] :
-            /\ e.id > 0
-            /\ e.data \in Events \union {Null}
-
-ConsistentLACProgression ==
-    \A tid \in Timelines :
-        timelines[tid].lac <= timelines[tid].las
-
-ConsistentLAFRProgression ==
-    \A tid \in Timelines :
-        timelines[tid].lafc <= timelines[tid].las
-
-(***************************************************************************
-SPECIFICATION
-***************************************************************************)
-
-Spec == Init /\ [][Next]_<<catalog_variables, timeline_variables, messages, sent_events, acked_events>>
-
-THEOREM Spec => [](TypeInvariant)
-THEOREM Spec => [](MonotonicTerms)
-THEOREM Spec => [](ValidEnsembleComposition)
-THEOREM Spec => [](NoOrphanedEntries)
-THEOREM Spec => [](ConsistentLACProgression)
-THEOREM Spec => [](ConsistentLAFRProgression)
 
 ===============================================================================
 
