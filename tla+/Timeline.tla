@@ -51,7 +51,7 @@ VARIABLES
     timelines,
     sent_events,
     acked_events,
-    channel
+    message_channel
 
 
 ASSUME TimelineWQ \in Nat /\ TimelineWQ > 0
@@ -84,8 +84,8 @@ ReqFence(timeline, ensemble, term) ==
 **)
 
 
-UCSendMessageToEnsemble(messages) ==
-    /\ \A message \in messages :  message \notin DOMAIN channel
+UCSendToEnsemble(messages) ==
+    /\ \A message \in messages :  message \notin DOMAIN message_channel
     /\ LET loss_matrix == { loss_matrix \in SUBSET (messages \X {-1, 1}) :
                              /\ Cardinality(loss_matrix) = Cardinality(messages)
                              /\ \A message \in messages :
@@ -96,7 +96,17 @@ UCSendMessageToEnsemble(messages) ==
                                         message \in messages |-> LET tuple == CHOOSE tuple \in plan: tuple[1] = message IN tuple[2]
                                     ]
                 IN
-                    channel' = channel @@ choosen_messages
+                    message_channel' = message_channel @@ choosen_messages
+
+
+DropAndSendAnother(drop_message, another_message) ==
+    /\ drop_message \in DOMAIN message_channel
+    /\ another_message \notin DOMAIN message_channel
+    /\ message_channel[drop_message] >= 1
+    /\ \E loss_factor \in {-1, 1} :
+        /\ message_channel' = [message_channel EXCEPT ![drop_message] = @-1] @@ another_message :> loss_factor
+
+
 
 (*****
     utilities function
@@ -118,7 +128,7 @@ NullEvent ==
      [ offset |-> 0, data |-> Null ]
 
 Segment ==
-    [ id: Nat, ensemble: SUBSET Units, first_entry_id: Nat]
+    [ id: Nat, ensemble: SUBSET Units, start_offset: Nat]
 
 InflightRecord ==
     [ entry: Entry, segment_id: Nat, ensemble: SUBSET Units]
@@ -152,7 +162,7 @@ InitTimeline(tid) ==
     [
         id                      |-> tid,
         term                    |-> 0,
-        segments                |-> [i \in 1..0 |-> [id |-> i, ensemble |-> {}, first_entry_id |-> 1]],
+        segments                |-> [i \in 1..0 |-> [id |-> i, ensemble |-> {}, start_offset |-> 1]],
         writable_segment        |-> Null,
         inflight_records        |-> {},
         status                  |-> Null,
@@ -188,7 +198,7 @@ IsEnsembleAvailable(available, quarantined) ==
 OpenNewTimeline(tid) ==
     /\ catalog_timeline_status = Null
     /\ Timelines[tid].catalog_timeline_version = Null
-    /\ LET segment == [id |-> 1, ensemble |->  FindEnsemble({}, {}), first_entry_id |-> 1]
+    /\ LET segment == [id |-> 1, ensemble |->  FindEnsemble({}, {}), start_offset |-> 1]
         IN
          /\ timelines' = [
                             timelines EXCEPT ![tid] =
@@ -231,6 +241,65 @@ OpenExistingTimeline(tid) ==
                     ]
     /\ UCSendMessageToEnsemble(ReqFence(timelines[tid], FindLast(catalog_timeline_segments).ensemble, catalog_timeline_new_term))
     /\ UNCHANGED << timeline_variables, catalog_timeline_segments, sent_events, acked_events>>
+
+
+HandleResFence(tid) ==
+    LET timeline == timelines[tid]
+    IN /\ timeline.reconciliation = ReconciliationFencing
+       /\ \E message \in DOMAIN message_channel
+             /\ message.tid  = tid
+             /\ message.type = FenceResponse
+             /\ message_channel[message] >= 1
+             /\ message.term = timeline.term
+             /\ message.code = Ok
+             /\ LET lac == IF message.lac > timeline.writable_segment.start_offset -1
+                           THEN message.lac
+                           ELSE timeline.writable_segment.start_offset -1
+                   lafc == IF message.lafc > timeline.writable_segment.start_offset -1
+                           THEN message.lafc
+                           ELSE timeline.writable_segment.start_offset -1
+               IN
+                /\ timeline' = [
+                                    timelines EXCEPT ![tid] =
+                                        [
+                                            @ EXCEPT !.fenced = @ \union {message.unit},
+                                                     !.reconciliation_lac = IF lafc > @ THEN lafc ELSE @,
+                                                     !.reconciliation_lac = IF lac > @ THEN lac ELSE @,
+                                                     !.lap = IF lafc > @ THEN lafc ELSE @
+                                        ]
+                               ]
+                /\ UNCHANGED << catalog_variables, sent_events, acked_events >>
+
+
+(**
+    Units
+**)
+
+
+\* Fencen handling
+
+ResFence(req) ==
+    [
+        type            |-> FenceResponse,
+        unit            |-> req.unit,
+        timeline_id     |-> req.timeline_id,
+        lac             |-> unit_timeline_lac[req.unit],
+        lafc            |-> unit_timeline_lafc[req.unit],
+        term            |-> req.term,
+        code            |-> Ok
+    ]
+
+
+UnitHandleReqFence ==
+    \E message \in message_channel :
+        /\ message.type = ReqFence
+        /\ message_channel[message] >= 1
+        /\ unit_timeline_term[message.unit] <= message.term
+        /\ unit_timeline_term' = [unit_timeline_term EXCEPT ![message.unit] = message.term]
+        /\ DropAndSendAnother(message, ResFence(message))
+        /\ UNCHANGED <<unit_timeline_event_records, unit_timeline_lac, unit_timeline_lafc, timelines, catalog_variables, sent_events, acked_events>>
+
+
 
 
 OpenTimeline(tid) ==
@@ -290,7 +359,7 @@ TimelineRecordEvents(tid) ==
 Init ==
     /\ catalog_timeline_term = 0
     /\ catalog_timeline_status = Null
-    /\ catalog_timeline_segments = [i \in 1..0 |-> [id |-> i, ensemble |-> {}, first_entry_id |-> 1]]
+    /\ catalog_timeline_segments = [i \in 1..0 |-> [id |-> i, ensemble |-> {}, start_offset |-> 1]]
     /\ catalog_timeline_type = TimelineBasic
     /\ catalog_timeline_version = 0
     /\ unit_timeline_term = [unit \in Units |-> 0]
