@@ -1,17 +1,18 @@
 // This is a standalone test for WAL record encoding/decoding
-// It tests the RocksDB-compatible WAL record format
+// It tests the RocksDB Recyclable WAL record format
 
 use std::io::{Error, ErrorKind};
 
-// RocksDB-compatible WAL Record Format:
-// +----------+-----------+-----------+--- ... ---+
-// |CRC (4B)  | Size (2B) | Type (1B) | Payload   |
-// +----------+-----------+-----------+--- ... ---+
+// RocksDB Recyclable WAL Record Format:
+// +---------+-----------+-----------+----------------+--- ... ---+
+// |CRC (4B) | Size (2B) | Type (1B) | Log number (4B)| Payload   |
+// +---------+-----------+-----------+----------------+--- ... ---+
 
 const CRC_SIZE: usize = 4;
 const SIZE_FIELD_SIZE: usize = 2;
 const TYPE_SIZE: usize = 1;
-const RECORD_HEADER_SIZE: usize = CRC_SIZE + SIZE_FIELD_SIZE + TYPE_SIZE;
+const LOG_NUMBER_SIZE: usize = 4;
+const RECORD_HEADER_SIZE: usize = CRC_SIZE + SIZE_FIELD_SIZE + TYPE_SIZE + LOG_NUMBER_SIZE;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +41,7 @@ impl RecordType {
 #[derive(Debug)]
 struct Record {
     record_type: RecordType,
+    log_number: u32,
     data: Vec<u8>,
 }
 
@@ -47,12 +49,17 @@ impl Record {
     fn new(data: Vec<u8>) -> Self {
         Record {
             record_type: RecordType::Full,
+            log_number: 0,
             data,
         }
     }
 
     fn new_with_type(record_type: RecordType, data: Vec<u8>) -> Self {
-        Record { record_type, data }
+        Record { 
+            record_type, 
+            log_number: 0,
+            data 
+        }
     }
 
     fn encode(&self) -> Result<Vec<u8>, Error> {
@@ -66,9 +73,10 @@ impl Record {
         let size = self.data.len() as u16;
         let record_type = self.record_type as u8;
         
-        // Compute CRC over type and payload (RocksDB compatible)
-        let mut crc_data = Vec::with_capacity(1 + self.data.len());
+        // Compute CRC over type, log number, and payload (RocksDB Recyclable format)
+        let mut crc_data = Vec::with_capacity(1 + 4 + self.data.len());
         crc_data.push(record_type);
+        crc_data.extend_from_slice(&self.log_number.to_le_bytes());
         crc_data.extend_from_slice(&self.data);
         let crc = xxh32(&crc_data, 0);
 
@@ -76,6 +84,7 @@ impl Record {
         encoded.extend_from_slice(&crc.to_le_bytes());
         encoded.extend_from_slice(&size.to_le_bytes());
         encoded.push(record_type);
+        encoded.extend_from_slice(&self.log_number.to_le_bytes());
         encoded.extend_from_slice(&self.data);
         Ok(encoded)
     }
@@ -91,6 +100,7 @@ impl Record {
         let expected_crc = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         let size = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
         let record_type_byte = bytes[6];
+        let log_number = u32::from_le_bytes([bytes[7], bytes[8], bytes[9], bytes[10]]);
         
         let record_type = RecordType::from_u8(record_type_byte)?;
 
@@ -104,9 +114,10 @@ impl Record {
 
         let data = &bytes[RECORD_HEADER_SIZE..total_size];
         
-        // Compute CRC over type and payload
-        let mut crc_data = Vec::with_capacity(1 + size);
+        // Compute CRC over type, log number, and payload
+        let mut crc_data = Vec::with_capacity(1 + 4 + size);
         crc_data.push(record_type_byte);
+        crc_data.extend_from_slice(&log_number.to_le_bytes());
         crc_data.extend_from_slice(data);
         let actual_crc = xxh32(&crc_data, 0);
 
@@ -117,7 +128,7 @@ impl Record {
             ));
         }
 
-        Ok((Record { record_type, data: data.to_vec() }, total_size))
+        Ok((Record { record_type, log_number, data: data.to_vec() }, total_size))
 
     }
 }
@@ -192,13 +203,14 @@ fn test_multiple_records() {
 }
 
 #[test]
-fn test_crc_computed_over_type_and_data() {
+fn test_crc_computed_over_type_log_number_and_data() {
     let data = b"test".to_vec();
     let record = Record::new(data.clone());
     let encoded = record.encode().unwrap();
 
-    // Manually verify CRC is computed over type + data
+    // Manually verify CRC is computed over type + log_number + data
     let mut crc_data = vec![RecordType::Full as u8];
+    crc_data.extend_from_slice(&0u32.to_le_bytes()); // log_number = 0
     crc_data.extend_from_slice(&data);
     let expected_crc = xxh32(&crc_data, 0);
     let encoded_crc = u32::from_le_bytes([encoded[0], encoded[1], encoded[2], encoded[3]]);
@@ -208,8 +220,8 @@ fn test_crc_computed_over_type_and_data() {
 
 #[test]
 fn test_header_size() {
-    // Verify header size is 7 bytes (4 CRC + 2 Size + 1 Type)
-    assert_eq!(RECORD_HEADER_SIZE, 7);
+    // Verify header size is 11 bytes (4 CRC + 2 Size + 1 Type + 4 Log Number)
+    assert_eq!(RECORD_HEADER_SIZE, 11);
 }
 
 #[test]

@@ -15,20 +15,21 @@ The Chronicle WAL is a batchable, standalone write-ahead log implementation insp
 
 ### Record Format
 
-Each record in the WAL uses the RocksDB-compatible format:
+Each record in the WAL uses the RocksDB Recyclable format:
 
 ```
-+----------+-----------+-----------+--- ... ---+
-|CRC (4B)  | Size (2B) | Type (1B) | Payload   |
-+----------+-----------+-----------+--- ... ---+
++---------+-----------+-----------+----------------+--- ... ---+
+|CRC (4B) | Size (2B) | Type (1B) | Log number (4B)| Payload   |
++---------+-----------+-----------+----------------+--- ... ---+
 ```
 
-- **CRC**: CRC32 checksum computed over the type and payload (we use XXH32 for performance)
+- **CRC**: CRC32 checksum computed over the type, log number, and payload (we use XXH32 for performance)
 - **Size**: Length of the payload data in bytes (little-endian u16, max 65535 bytes)
 - **Type**: Record type (Full=1, First=2, Middle=3, Last=4) for block-based storage
+- **Log number**: 32-bit log file number to distinguish between recent vs previous log writers
 - **Payload**: The actual record data
 
-This format is compatible with RocksDB's WAL record structure, enabling interoperability and future enhancements like block-based storage and recycling.
+This format is the RocksDB Recyclable format, which enables WAL file recycling while distinguishing records from different log writers.
 
 ### Write Path
 
