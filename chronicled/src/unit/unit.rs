@@ -39,6 +39,7 @@ impl Unit {
         let write_ahead_log = Wal::new(WalOptions { 
             dir: wal_dir,
             max_segment_size: None, // Use default
+            recycle: false, // Disable recycling by default for safety
         }).await?;
 
         info!("starting the catalog...");

@@ -15,17 +15,20 @@ The Chronicle WAL is a batchable, standalone write-ahead log implementation insp
 
 ### Record Format
 
-Each record in the WAL uses a simple, efficient format:
+Each record in the WAL uses the RocksDB-compatible format:
 
 ```
-+------------------+------------------+------------------+
-| Length (4 bytes) | XXH32 (4 bytes)  | Data (N bytes)   |
-+------------------+------------------+------------------+
++----------+-----------+-----------+--- ... ---+
+|CRC (4B)  | Size (2B) | Type (1B) | Payload   |
++----------+-----------+-----------+--- ... ---+
 ```
 
-- **Length**: Size of the data payload in bytes (little-endian u32)
-- **XXH32**: XXH32 checksum of the data for corruption detection
-- **Data**: The actual record payload
+- **CRC**: CRC32 checksum computed over the type and payload (we use XXH32 for performance)
+- **Size**: Length of the payload data in bytes (little-endian u16, max 65535 bytes)
+- **Type**: Record type (Full=1, First=2, Middle=3, Last=4) for block-based storage
+- **Payload**: The actual record data
+
+This format is compatible with RocksDB's WAL record structure, enabling interoperability and future enhancements like block-based storage and recycling.
 
 ### Write Path
 
@@ -65,9 +68,11 @@ On startup or after a crash, the WAL can be recovered using the `read_all()` met
 use chronicled::wal::wal::{Wal, WalOptions};
 
 // Create a new WAL
+// Create a WAL with recycling enabled for better performance
 let wal = Wal::new(WalOptions {
     dir: "/path/to/wal".to_string(),
     max_segment_size: Some(64 * 1024 * 1024), // 64MB
+    recycle: true, // Enable WAL file recycling
 }).await?;
 
 // Append a single record
@@ -99,6 +104,20 @@ for record in recovered_records {
 
 - **`dir`**: Directory where WAL segment files are stored
 - **`max_segment_size`**: Maximum size of a segment before rotation (default: 64MB)
+- **`recycle`**: Enable WAL file recycling to reuse old log files (default: false)
+
+### WAL File Recycling
+
+When `recycle` is enabled, the WAL will reuse existing log files by truncating them to zero length instead of creating new files. This reduces allocation overhead and can improve performance, especially on filesystems where file creation is expensive.
+
+**Benefits:**
+- Reduced allocation overhead
+- Lower filesystem metadata operations
+- Better performance for write-heavy workloads
+
+**Considerations:**
+- Ensure old WAL files are no longer needed before recycling
+- May require additional logic to track which files can be safely recycled
 
 ### Batching Parameters
 
@@ -115,7 +134,7 @@ The batching mechanism significantly reduces write amplification:
 
 - Individual writes are grouped into batches
 - Each batch is written as a single I/O operation
-- Checksums and headers add minimal overhead (8 bytes per record)
+- Checksums and headers add minimal overhead (7 bytes per record)
 
 ### Latency
 

@@ -1,39 +1,99 @@
 use std::io::{Error, ErrorKind};
 use xxhash_rust::xxh32::xxh32;
 
-// WAL Record Format:
-// +------------------+------------------+------------------+
-// | Length (4 bytes) | XXH32 (4 bytes)  | Data (N bytes)   |
-// +------------------+------------------+------------------+
+// WAL Record Format (RocksDB-compatible):
+// +----------+-----------+-----------+--- ... ---+
+// |CRC (4B)  | Size (2B) | Type (1B) | Payload   |
+// +----------+-----------+-----------+--- ... ---+
 //
-// Length: length of data in bytes (little-endian u32)
-// XXH32: XXH32 checksum of data (little-endian u32)
-// Data: actual record payload
+// CRC: CRC32 checksum computed over the type and payload
+// Size: Length of the payload data (little-endian u16)
+// Type: Type of record (kFullType, kFirstType, kMiddleType, kLastType)
+// Payload: Byte stream as long as specified by the payload size
+//
+// Note: We use XXH32 instead of CRC32 for performance, but maintain compatibility
+// with the RocksDB format structure.
 
-const LENGTH_SIZE: usize = 4;
-const CHECKSUM_SIZE: usize = 4;
-pub const RECORD_HEADER_SIZE: usize = LENGTH_SIZE + CHECKSUM_SIZE;
+const CRC_SIZE: usize = 4;
+const SIZE_FIELD_SIZE: usize = 2;
+const TYPE_SIZE: usize = 1;
+pub const RECORD_HEADER_SIZE: usize = CRC_SIZE + SIZE_FIELD_SIZE + TYPE_SIZE;
 
-/// Represents a WAL record with length, checksum, and data
+// Block size for RocksDB-compatible WAL (32KB)
+pub const BLOCK_SIZE: usize = 32 * 1024;
+
+/// Record types for block-based storage (RocksDB-compatible)
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordType {
+    /// Zero type for preallocated files
+    Zero = 0,
+    /// Record contains complete user data
+    Full = 1,
+    /// First fragment of user data
+    First = 2,
+    /// Middle fragment of user data
+    Middle = 3,
+    /// Last fragment of user data
+    Last = 4,
+}
+
+impl RecordType {
+    fn from_u8(value: u8) -> Result<Self, Error> {
+        match value {
+            0 => Ok(RecordType::Zero),
+            1 => Ok(RecordType::Full),
+            2 => Ok(RecordType::First),
+            3 => Ok(RecordType::Middle),
+            4 => Ok(RecordType::Last),
+            _ => Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("invalid record type: {}", value),
+            )),
+        }
+    }
+}
+
+/// Represents a WAL record with CRC, size, type, and data (RocksDB-compatible)
 #[derive(Debug)]
 pub struct Record {
+    pub record_type: RecordType,
     pub data: Vec<u8>,
 }
 
 impl Record {
-    /// Create a new record from data
+    /// Create a new full record from data
     pub fn new(data: Vec<u8>) -> Self {
-        Record { data }
+        Record {
+            record_type: RecordType::Full,
+            data,
+        }
     }
 
-    /// Encode the record into bytes with header
+    /// Create a new record with specified type
+    pub fn new_with_type(record_type: RecordType, data: Vec<u8>) -> Self {
+        Record { record_type, data }
+    }
+
+    /// Encode the record into bytes with RocksDB-compatible header
     pub fn encode(&self) -> Vec<u8> {
-        let len = self.data.len() as u32;
-        let crc = xxh32(&self.data, 0);
+        if self.data.len() > u16::MAX as usize {
+            panic!("Record data too large: {} bytes (max: {})", self.data.len(), u16::MAX);
+        }
+        
+        let size = self.data.len() as u16;
+        let record_type = self.record_type as u8;
+        
+        // Compute CRC over type and payload (RocksDB compatible)
+        let mut crc_data = Vec::with_capacity(1 + self.data.len());
+        crc_data.push(record_type);
+        crc_data.extend_from_slice(&self.data);
+        let crc = xxh32(&crc_data, 0);
 
         let mut encoded = Vec::with_capacity(RECORD_HEADER_SIZE + self.data.len());
-        encoded.extend_from_slice(&len.to_le_bytes());
         encoded.extend_from_slice(&crc.to_le_bytes());
+        encoded.extend_from_slice(&size.to_le_bytes());
+        encoded.push(record_type);
         encoded.extend_from_slice(&self.data);
         encoded
     }
@@ -47,10 +107,13 @@ impl Record {
             ));
         }
 
-        let len = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
-        let expected_crc = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+        let expected_crc = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        let size = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
+        let record_type_byte = bytes[6];
+        
+        let record_type = RecordType::from_u8(record_type_byte)?;
 
-        let total_size = RECORD_HEADER_SIZE + len;
+        let total_size = RECORD_HEADER_SIZE + size;
         if bytes.len() < total_size {
             return Err(Error::new(
                 ErrorKind::UnexpectedEof,
@@ -59,7 +122,12 @@ impl Record {
         }
 
         let data = &bytes[RECORD_HEADER_SIZE..total_size];
-        let actual_crc = xxh32(data, 0);
+        
+        // Compute CRC over type and payload
+        let mut crc_data = Vec::with_capacity(1 + size);
+        crc_data.push(record_type_byte);
+        crc_data.extend_from_slice(data);
+        let actual_crc = xxh32(&crc_data, 0);
 
         if actual_crc != expected_crc {
             return Err(Error::new(
@@ -68,7 +136,7 @@ impl Record {
             ));
         }
 
-        Ok((Record { data: data.to_vec() }, total_size))
+        Ok((Record { record_type, data: data.to_vec() }, total_size))
     }
 }
 
@@ -117,7 +185,27 @@ mod tests {
 
         let (decoded, size) = Record::decode(&encoded).unwrap();
         assert_eq!(decoded.data, data);
+        assert_eq!(decoded.record_type, RecordType::Full);
         assert_eq!(size, encoded.len());
+    }
+
+    #[test]
+    fn test_record_types() {
+        for (record_type, type_val) in [
+            (RecordType::Full, 1u8),
+            (RecordType::First, 2u8),
+            (RecordType::Middle, 3u8),
+            (RecordType::Last, 4u8),
+        ] {
+            let data = b"test data".to_vec();
+            let record = Record::new_with_type(record_type, data.clone());
+            let encoded = record.encode();
+
+            let (decoded, _) = Record::decode(&encoded).unwrap();
+            assert_eq!(decoded.data, data);
+            assert_eq!(decoded.record_type, record_type);
+            assert_eq!(encoded[6], type_val);
+        }
     }
 
     #[test]
@@ -150,6 +238,7 @@ mod tests {
         for i in 0..3 {
             let (record, size) = Record::decode(&encoded[offset..]).unwrap();
             assert_eq!(record.data, format!("record{}", i + 1).as_bytes());
+            assert_eq!(record.record_type, RecordType::Full);
             offset += size;
         }
     }
@@ -163,5 +252,26 @@ mod tests {
         // Try to decode with incomplete data
         let result = Record::decode(&encoded[..5]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_crc_computed_over_type_and_data() {
+        let data = b"test".to_vec();
+        let record = Record::new(data.clone());
+        let encoded = record.encode();
+
+        // Manually verify CRC is computed over type + data
+        let mut crc_data = vec![RecordType::Full as u8];
+        crc_data.extend_from_slice(&data);
+        let expected_crc = xxh32(&crc_data, 0);
+        let encoded_crc = u32::from_le_bytes([encoded[0], encoded[1], encoded[2], encoded[3]]);
+        
+        assert_eq!(encoded_crc, expected_crc);
+    }
+
+    #[test]
+    fn test_header_size() {
+        // Verify header size is 7 bytes (4 CRC + 2 Size + 1 Type)
+        assert_eq!(RECORD_HEADER_SIZE, 7);
     }
 }

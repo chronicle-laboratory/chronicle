@@ -10,6 +10,7 @@ pub struct Segment {
 }
 
 impl Segment {
+    /// Create a new segment or open an existing one
     pub async fn new(path: PathBuf) -> Result<Self, Error> {
         let file = OpenOptions::new()
             .create(true)
@@ -24,6 +25,27 @@ impl Segment {
             path, 
             file,
             write_offset,
+        })
+    }
+
+    /// Create a segment by recycling (truncating) an existing file
+    /// 
+    /// This reuses an existing log file by truncating it to zero length,
+    /// which can reduce allocation overhead. If the file doesn't exist,
+    /// it will be created.
+    pub async fn new_with_recycle(path: PathBuf) -> Result<Self, Error> {
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(true)  // Truncate to zero for recycling
+            .open(&path)
+            .await?;
+        
+        Ok(Segment { 
+            path, 
+            file,
+            write_offset: 0,
         })
     }
 
