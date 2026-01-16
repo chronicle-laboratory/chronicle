@@ -2,8 +2,11 @@ use crate::error::unit_error::UnitError;
 use crate::wal::record::{Record, RecordBatch};
 use crate::wal::segment::Segment;
 use crate::wal::INVALID_OFFSET;
+use async_stream::stream;
+use futures_util::stream::Stream;
 use log::info;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::select;
@@ -13,7 +16,7 @@ use tokio::sync::watch;
 use tokio::sync::watch::Receiver;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tokio::time::{interval, Interval};
+use tokio::time::interval;
 use tokio::{sync, task};
 use tokio_util::sync::CancellationToken;
 
@@ -202,27 +205,6 @@ impl Wal {
         rx.await.map_err(|_| UnitError::Wal)
     }
 
-    /// Append multiple records as a batch
-    /// 
-    /// This is a convenience method that calls `append()` for each record.
-    /// For truly atomic batch writes, records are still written individually
-    /// but grouped by the background batcher.
-    /// 
-    /// # Arguments
-    /// * `batch` - Vector of record payloads to write
-    /// 
-    /// # Returns
-    /// * `Ok(offsets)` - Vector of offsets where each record was written
-    /// * `Err(UnitError)` - Failed to append one or more records
-    pub async fn append_batch(&self, batch: Vec<Vec<u8>>) -> Result<Vec<i64>, UnitError> {
-        let mut offsets = Vec::with_capacity(batch.len());
-        for data in batch {
-            let offset = self.append(data).await?;
-            offsets.push(offset);
-        }
-        Ok(offsets)
-    }
-
     /// Get a watch receiver for tracking synced offsets
     /// 
     /// The returned receiver will be notified whenever data is fsynced to disk.
@@ -234,41 +216,79 @@ impl Wal {
         self.inner.synced_offset.clone()
     }
 
-    /// Read all records from the WAL for recovery
+    /// Read records from the WAL as a stream
     /// 
-    /// This method reads the entire WAL from beginning to end, decoding each
-    /// record and validating its checksum. It's typically used during startup
-    /// to replay committed writes after a crash.
+    /// This method provides a streaming interface for reading records from the WAL.
+    /// Instead of loading all records into memory at once, it yields records one at a time.
+    /// This is more efficient for large WAL files and prevents system overload.
     /// 
     /// **Note**: This method locks the writable segment during the entire read,
     /// blocking write operations. For large WAL files, consider calling this only
     /// during initialization before accepting writes.
     /// 
     /// # Returns
-    /// * `Ok(records)` - Vector of all valid records in the WAL
-    /// * `Err(UnitError)` - Failed to read or decode records
-    pub async fn read_all(&self) -> Result<Vec<Vec<u8>>, UnitError> {
+    /// * A stream of `Result<Vec<u8>, UnitError>` where each item is either:
+    ///   - `Ok(record_data)` - A successfully decoded record
+    ///   - `Err(UnitError)` - An error occurred reading or decoding
+    /// 
+    /// # Example
+    /// ```no_run
+    /// use futures_util::stream::StreamExt;
+    /// # use chronicled::wal::wal::{Wal, WalOptions};
+    /// 
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let wal = Wal::new(WalOptions {
+    /// #     dir: "/tmp/wal".to_string(),
+    /// #     max_segment_size: None,
+    /// # }).await?;
+    /// let mut stream = wal.read_stream().await;
+    /// 
+    /// while let Some(result) = stream.next().await {
+    ///     match result {
+    ///         Ok(data) => println!("Read record: {:?}", data),
+    ///         Err(e) => eprintln!("Error reading record: {:?}", e),
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn read_stream(&self) -> Pin<Box<dyn Stream<Item = Result<Vec<u8>, UnitError>> + Send + '_>> {
         let mut segment = self.inner.writable_segment.lock().await;
-        let data = segment.read_all().await
-            .map_err(|e| UnitError::Storage(e.to_string()))?;
         
-        let mut records = Vec::new();
-        let mut offset = 0;
+        // Read all data from segment
+        let data_result = segment.read_all().await;
         
-        while offset < data.len() {
-            match Record::decode(&data[offset..]) {
-                Ok((record, size)) => {
-                    records.push(record.data);
-                    offset += size;
-                }
-                Err(e) => {
-                    info!("Failed to decode record at offset {}: {}", offset, e);
-                    break;
+        // Drop the lock before creating the stream
+        drop(segment);
+        
+        let data = match data_result {
+            Ok(d) => d,
+            Err(e) => {
+                // Return a stream with a single error
+                return Box::pin(stream! {
+                    yield Err(UnitError::Storage(e.to_string()));
+                });
+            }
+        };
+        
+        // Create a stream that yields records one by one
+        Box::pin(stream! {
+            let mut offset = 0;
+            
+            while offset < data.len() {
+                match Record::decode(&data[offset..]) {
+                    Ok((record, size)) => {
+                        yield Ok(record.data);
+                        offset += size;
+                    }
+                    Err(e) => {
+                        info!("Failed to decode record at offset {}: {}", offset, e);
+                        // Stop streaming on decode error
+                        break;
+                    }
                 }
             }
-        }
-        
-        Ok(records)
+        })
     }
 }
 
