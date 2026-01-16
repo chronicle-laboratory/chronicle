@@ -3,16 +3,16 @@ use xxhash_rust::xxh32::xxh32;
 
 // WAL Record Format:
 // +------------------+------------------+------------------+
-// | Length (4 bytes) | CRC32 (4 bytes)  | Data (N bytes)   |
+// | Length (4 bytes) | XXH32 (4 bytes)  | Data (N bytes)   |
 // +------------------+------------------+------------------+
 //
 // Length: length of data in bytes (little-endian u32)
-// CRC32: XXH32 checksum of data (little-endian u32)
+// XXH32: XXH32 checksum of data (little-endian u32)
 // Data: actual record payload
 
 const LENGTH_SIZE: usize = 4;
-const CRC_SIZE: usize = 4;
-pub const RECORD_HEADER_SIZE: usize = LENGTH_SIZE + CRC_SIZE;
+const CHECKSUM_SIZE: usize = 4;
+pub const RECORD_HEADER_SIZE: usize = LENGTH_SIZE + CHECKSUM_SIZE;
 
 /// Represents a WAL record with length, checksum, and data
 #[derive(Debug)]

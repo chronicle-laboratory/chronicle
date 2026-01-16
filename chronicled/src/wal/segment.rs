@@ -51,6 +51,10 @@ impl Segment {
     }
 
     /// Read data from the segment starting at the given offset
+    /// 
+    /// **Note**: This method modifies the file position and is not thread-safe
+    /// for concurrent reads. If you need concurrent read access, consider using
+    /// a separate file handle or locking mechanism.
     pub async fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<usize, Error> {
         self.file.seek(std::io::SeekFrom::Start(offset)).await?;
         self.file.read(buf).await

@@ -19,12 +19,12 @@ Each record in the WAL uses a simple, efficient format:
 
 ```
 +------------------+------------------+------------------+
-| Length (4 bytes) | CRC32 (4 bytes)  | Data (N bytes)   |
+| Length (4 bytes) | XXH32 (4 bytes)  | Data (N bytes)   |
 +------------------+------------------+------------------+
 ```
 
 - **Length**: Size of the data payload in bytes (little-endian u32)
-- **CRC32**: XXH32 checksum of the data for corruption detection
+- **XXH32**: XXH32 checksum of the data for corruption detection
 - **Data**: The actual record payload
 
 ### Write Path

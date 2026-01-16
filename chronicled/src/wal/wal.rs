@@ -218,6 +218,10 @@ impl Wal {
     /// record and validating its checksum. It's typically used during startup
     /// to replay committed writes after a crash.
     /// 
+    /// **Note**: This method locks the writable segment during the entire read,
+    /// blocking write operations. For large WAL files, consider calling this only
+    /// during initialization before accepting writes.
+    /// 
     /// # Returns
     /// * `Ok(records)` - Vector of all valid records in the WAL
     /// * `Err(UnitError)` - Failed to read or decode records
@@ -297,6 +301,11 @@ async fn flush_batch(
     senders: Vec<oneshot::Sender<i64>>,
     advanced_offset_tx: &watch::Sender<i64>,
 ) {
+    // Calculate individual record sizes for offset tracking
+    let record_sizes: Vec<usize> = batch.records.iter()
+        .map(|r| r.encode().len())
+        .collect();
+    
     let encoded = batch.encode();
     let mut segment = inner.writable_segment.lock().await;
     
@@ -304,25 +313,25 @@ async fn flush_batch(
         Ok(base_offset) => {
             let base_offset = base_offset as i64;
             
-            // Send offset to each sender (for simplicity, use base_offset for all)
-            // In a real implementation, you might want to track individual offsets
-            for sender in senders {
-                if sender.send(base_offset).is_err() {
+            // Calculate individual offsets for each record in the batch
+            let mut current_offset = base_offset;
+            for (sender, size) in senders.into_iter().zip(record_sizes.iter()) {
+                if sender.send(current_offset).is_err() {
                     info!("Failed to send offset back to caller");
                 }
+                current_offset += *size as i64;
             }
             
-            // Notify about the latest offset
-            if advanced_offset_tx.send(base_offset).is_err() {
+            // Notify about the latest offset (end of batch)
+            let final_offset = base_offset + encoded.len() as i64;
+            if advanced_offset_tx.send(final_offset).is_err() {
                 info!("No active subscriber for advanced offset");
             }
         }
         Err(e) => {
             info!("Failed to write batch to segment: {:?}", e);
-            // Notify callers of the error
-            for sender in senders {
-                let _ = sender.send(INVALID_OFFSET);
-            }
+            // Don't send INVALID_OFFSET as it could be confused with valid offset
+            // Just drop the senders, causing the receivers to get a RecvError
         }
     }
 }
