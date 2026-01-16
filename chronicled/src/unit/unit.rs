@@ -36,7 +36,11 @@ impl Unit {
 
         info!("loading the write ahead log...");
         let wal_dir = options.wal.dir.clone();
-        let write_ahead_log = Wal::new(WalOptions { dir: wal_dir }).await?;
+        let write_ahead_log = Wal::new(WalOptions { 
+            dir: wal_dir,
+            max_segment_size: None, // Use default
+            recycle: false, // Disable recycling by default for safety
+        }).await?;
 
         info!("starting the catalog...");
         let catalog = Arc::new(
