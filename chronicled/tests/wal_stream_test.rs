@@ -2,7 +2,6 @@
 
 use chronicled::wal::wal::{Wal, WalOptions};
 use futures_util::stream::StreamExt;
-use std::path::PathBuf;
 
 #[tokio::test]
 async fn test_wal_stream_read_empty() {
