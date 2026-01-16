@@ -69,6 +69,7 @@ impl Inner {
 /// let wal = Wal::new(WalOptions {
 ///     dir: "/tmp/wal".to_string(),
 ///     max_segment_size: None, // Use default
+///     recycle: false,
 /// }).await?;
 /// 
 /// // Append a record
@@ -240,6 +241,7 @@ impl Wal {
     /// # let wal = Wal::new(WalOptions {
     /// #     dir: "/tmp/wal".to_string(),
     /// #     max_segment_size: None,
+    /// #     recycle: false,
     /// # }).await?;
     /// let mut stream = wal.read_stream().await;
     /// 
