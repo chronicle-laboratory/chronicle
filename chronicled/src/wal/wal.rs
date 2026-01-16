@@ -17,35 +17,66 @@ use tokio::time::{interval, Interval};
 use tokio::{sync, task};
 use tokio_util::sync::CancellationToken;
 
-// Maximum segment size before rotation (64MB)
+/// Maximum segment size before rotation (64MB)
 const DEFAULT_MAX_SEGMENT_SIZE: u64 = 64 * 1024 * 1024;
 
-// Batch flush interval
+/// Batch flush interval in milliseconds
 const BATCH_FLUSH_INTERVAL_MS: u64 = 10;
 
-// Maximum batch size
+/// Maximum number of records in a batch before forced flush
 const MAX_BATCH_SIZE: usize = 512;
 
+/// Internal state shared between writer and syncer tasks
 struct Inner {
+    /// Channel for sending write requests to the background writer
     buffer: sync::mpsc::Sender<(Vec<u8>, oneshot::Sender<i64>)>,
+    /// Watch channel for tracking synced offsets
     synced_offset: Receiver<i64>,
+    /// Currently active segment for writes
     writable_segment: Mutex<Segment>,
+    /// Maximum size before segment rotation
     max_segment_size: u64,
 }
 
 impl Inner {
+    /// Sync the current segment to disk
     async fn sync_data(&self) {
         if let Err(e) = self.writable_segment.lock().await.sync().await {
             info!("Failed to sync writable segment: {:?}", e);
         }
     }
 
+    /// Check if the current segment should be rotated
     async fn should_rotate(&self) -> bool {
         let segment = self.writable_segment.lock().await;
         segment.size() >= self.max_segment_size
     }
 }
 
+/// Write-Ahead Log (WAL) for durable, crash-recoverable writes
+/// 
+/// The WAL provides ordered, durable writes with batching and checksums.
+/// All writes are persisted to disk before clients are notified.
+/// 
+/// # Example
+/// ```no_run
+/// use chronicled::wal::wal::{Wal, WalOptions};
+/// 
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let wal = Wal::new(WalOptions {
+///     dir: "/tmp/wal".to_string(),
+///     max_segment_size: None, // Use default
+/// }).await?;
+/// 
+/// // Append a record
+/// let offset = wal.append(b"my data".to_vec()).await?;
+/// 
+/// // Watch for synced offsets
+/// let mut watcher = wal.watch_synced();
+/// watcher.changed().await?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone)]
 pub struct Wal {
     context: CancellationToken,
@@ -54,12 +85,26 @@ pub struct Wal {
     wal_syncer_handle: Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>>,
 }
 
+/// Configuration options for creating a WAL
 pub struct WalOptions {
+    /// Directory where WAL segments are stored
     pub dir: String,
+    /// Maximum size of a segment before rotation (default: 64MB)
     pub max_segment_size: Option<u64>,
 }
 
 impl Wal {
+    /// Create a new WAL instance with the given options
+    /// 
+    /// This creates the WAL directory if it doesn't exist, opens or creates
+    /// the first segment, and starts background writer and syncer tasks.
+    /// 
+    /// # Arguments
+    /// * `options` - Configuration options for the WAL
+    /// 
+    /// # Returns
+    /// * `Ok(Wal)` - Successfully created WAL instance
+    /// * `Err(UnitError)` - Failed to create WAL (e.g., directory creation failed)
     pub async fn new(options: WalOptions) -> Result<Wal, UnitError> {
         let (buf_tx, buf_rx) = channel::<(Vec<u8>, oneshot::Sender<i64>)>(1024);
 
@@ -109,11 +154,22 @@ impl Wal {
         })
     }
 
+    /// Close the WAL (currently a no-op)
     pub fn close() -> Result<(), UnitError> {
         Ok(())
     }
 
     /// Append a single record to the WAL
+    /// 
+    /// The record is added to a batch and will be written to disk within
+    /// the batch flush interval (10ms) or when the batch size limit (512) is reached.
+    /// 
+    /// # Arguments
+    /// * `data` - The record payload to write
+    /// 
+    /// # Returns
+    /// * `Ok(offset)` - The offset where the record was written
+    /// * `Err(UnitError::Wal)` - Failed to append the record
     pub async fn append(&self, data: Vec<u8>) -> Result<i64, UnitError> {
         let (tx, rx) = oneshot::channel();
         self.inner
@@ -125,6 +181,17 @@ impl Wal {
     }
 
     /// Append multiple records as a batch
+    /// 
+    /// This is a convenience method that calls `append()` for each record.
+    /// For truly atomic batch writes, records are still written individually
+    /// but grouped by the background batcher.
+    /// 
+    /// # Arguments
+    /// * `batch` - Vector of record payloads to write
+    /// 
+    /// # Returns
+    /// * `Ok(offsets)` - Vector of offsets where each record was written
+    /// * `Err(UnitError)` - Failed to append one or more records
     pub async fn append_batch(&self, batch: Vec<Vec<u8>>) -> Result<Vec<i64>, UnitError> {
         let mut offsets = Vec::with_capacity(batch.len());
         for data in batch {
@@ -134,11 +201,26 @@ impl Wal {
         Ok(offsets)
     }
 
+    /// Get a watch receiver for tracking synced offsets
+    /// 
+    /// The returned receiver will be notified whenever data is fsynced to disk.
+    /// Clients can use this to wait for durability guarantees.
+    /// 
+    /// # Returns
+    /// A watch receiver that updates with the latest synced offset
     pub fn watch_synced(&self) -> Receiver<i64> {
         self.inner.synced_offset.clone()
     }
 
-    /// Read all records from the WAL (for recovery)
+    /// Read all records from the WAL for recovery
+    /// 
+    /// This method reads the entire WAL from beginning to end, decoding each
+    /// record and validating its checksum. It's typically used during startup
+    /// to replay committed writes after a crash.
+    /// 
+    /// # Returns
+    /// * `Ok(records)` - Vector of all valid records in the WAL
+    /// * `Err(UnitError)` - Failed to read or decode records
     pub async fn read_all(&self) -> Result<Vec<Vec<u8>>, UnitError> {
         let mut segment = self.inner.writable_segment.lock().await;
         let data = segment.read_all().await
