@@ -76,9 +76,14 @@ impl Record {
     }
 
     /// Encode the record into bytes with RocksDB-compatible header
-    pub fn encode(&self) -> Vec<u8> {
+    /// 
+    /// Returns an error if the data is too large (exceeds 65535 bytes).
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
         if self.data.len() > u16::MAX as usize {
-            panic!("Record data too large: {} bytes (max: {})", self.data.len(), u16::MAX);
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!("Record data too large: {} bytes (max: {})", self.data.len(), u16::MAX),
+            ));
         }
         
         let size = self.data.len() as u16;
@@ -95,7 +100,7 @@ impl Record {
         encoded.extend_from_slice(&size.to_le_bytes());
         encoded.push(record_type);
         encoded.extend_from_slice(&self.data);
-        encoded
+        Ok(encoded)
     }
 
     /// Decode a record from bytes
@@ -156,12 +161,13 @@ impl RecordBatch {
         self.records.push(record);
     }
 
-    pub fn encode(&self) -> Vec<u8> {
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
         let mut encoded = Vec::new();
         for record in &self.records {
-            encoded.extend_from_slice(&record.encode());
+            let record_encoded = record.encode()?;
+            encoded.extend_from_slice(&record_encoded);
         }
-        encoded
+        Ok(encoded)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -181,7 +187,7 @@ mod tests {
     fn test_record_encode_decode() {
         let data = b"hello world".to_vec();
         let record = Record::new(data.clone());
-        let encoded = record.encode();
+        let encoded = record.encode().unwrap();
 
         let (decoded, size) = Record::decode(&encoded).unwrap();
         assert_eq!(decoded.data, data);
@@ -199,7 +205,7 @@ mod tests {
         ] {
             let data = b"test data".to_vec();
             let record = Record::new_with_type(record_type, data.clone());
-            let encoded = record.encode();
+            let encoded = record.encode().unwrap();
 
             let (decoded, _) = Record::decode(&encoded).unwrap();
             assert_eq!(decoded.data, data);
@@ -212,7 +218,7 @@ mod tests {
     fn test_record_checksum_validation() {
         let data = b"hello world".to_vec();
         let record = Record::new(data);
-        let mut encoded = record.encode();
+        let mut encoded = record.encode().unwrap();
 
         // Corrupt the data
         encoded[RECORD_HEADER_SIZE] = encoded[RECORD_HEADER_SIZE].wrapping_add(1);
@@ -229,7 +235,7 @@ mod tests {
         batch.add(Record::new(b"record2".to_vec()));
         batch.add(Record::new(b"record3".to_vec()));
 
-        let encoded = batch.encode();
+        let encoded = batch.encode().unwrap();
         assert!(!encoded.is_empty());
         assert_eq!(batch.len(), 3);
 
@@ -247,7 +253,7 @@ mod tests {
     fn test_incomplete_record() {
         let data = b"hello".to_vec();
         let record = Record::new(data);
-        let encoded = record.encode();
+        let encoded = record.encode().unwrap();
 
         // Try to decode with incomplete data
         let result = Record::decode(&encoded[..5]);
@@ -258,7 +264,7 @@ mod tests {
     fn test_crc_computed_over_type_and_data() {
         let data = b"test".to_vec();
         let record = Record::new(data.clone());
-        let encoded = record.encode();
+        let encoded = record.encode().unwrap();
 
         // Manually verify CRC is computed over type + data
         let mut crc_data = vec![RecordType::Full as u8];

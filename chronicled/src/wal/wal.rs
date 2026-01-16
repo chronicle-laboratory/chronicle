@@ -324,11 +324,28 @@ async fn flush_batch(
     advanced_offset_tx: &watch::Sender<i64>,
 ) {
     // Calculate individual record sizes for offset tracking
-    let record_sizes: Vec<usize> = batch.records.iter()
-        .map(|r| r.encode().len())
+    let record_sizes: Result<Vec<usize>, _> = batch.records.iter()
+        .map(|r| r.encode().map(|e| e.len()))
         .collect();
     
-    let encoded = batch.encode();
+    let record_sizes = match record_sizes {
+        Ok(sizes) => sizes,
+        Err(e) => {
+            info!("Failed to encode records in batch: {:?}", e);
+            // Drop senders to notify callers of the error
+            return;
+        }
+    };
+    
+    let encoded = match batch.encode() {
+        Ok(e) => e,
+        Err(e) => {
+            info!("Failed to encode batch: {:?}", e);
+            // Drop senders to notify callers of the error
+            return;
+        }
+    };
+    
     let mut segment = inner.writable_segment.lock().await;
     
     match segment.write(&encoded).await {
@@ -360,9 +377,24 @@ async fn flush_batch(
 
 /// Find a recyclable WAL file in the directory
 /// 
-/// This looks for existing .log files that can be truncated and reused.
+/// **IMPORTANT**: This is a simplified implementation for demonstration purposes.
+/// In production, you MUST implement proper logic to ensure the file is no longer
+/// needed before recycling it. This could involve:
+/// - Checking if all data has been flushed to storage
+/// - Verifying no readers are accessing the file
+/// - Maintaining a list of archived/obsolete files
+/// 
 /// Returns the path to a recyclable file, or an error if none are available.
 async fn find_recyclable_wal(dir: &str) -> Result<PathBuf, std::io::Error> {
+    // For safety, we currently disable automatic recycling by always returning an error.
+    // This forces creation of new files. To enable recycling, implement proper
+    // safeguards as described above.
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "Automatic WAL recycling disabled for safety - implement proper safeguards first",
+    ))
+    
+    /* Original implementation - commented out for safety:
     use tokio::fs;
     
     let mut entries = fs::read_dir(dir).await?;
@@ -377,10 +409,8 @@ async fn find_recyclable_wal(dir: &str) -> Result<PathBuf, std::io::Error> {
         }
     }
     
-    // Sort by modification time and return the oldest one for recycling
     if !wal_files.is_empty() {
-        // For simplicity, just return the first one
-        // In a production system, you'd want to check if the file is no longer needed
+        // TODO: Check if file is actually safe to recycle
         Ok(wal_files[0].clone())
     } else {
         Err(std::io::Error::new(
@@ -388,6 +418,7 @@ async fn find_recyclable_wal(dir: &str) -> Result<PathBuf, std::io::Error> {
             "No recyclable WAL files found",
         ))
     }
+    */
 }
 
 async fn bg_wal_syncer(

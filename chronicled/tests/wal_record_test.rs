@@ -55,7 +55,14 @@ impl Record {
         Record { record_type, data }
     }
 
-    fn encode(&self) -> Vec<u8> {
+    fn encode(&self) -> Result<Vec<u8>, Error> {
+        if self.data.len() > u16::MAX as usize {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!("Record data too large: {} bytes (max: {})", self.data.len(), u16::MAX),
+            ));
+        }
+        
         let size = self.data.len() as u16;
         let record_type = self.record_type as u8;
         
@@ -70,7 +77,7 @@ impl Record {
         encoded.extend_from_slice(&size.to_le_bytes());
         encoded.push(record_type);
         encoded.extend_from_slice(&self.data);
-        encoded
+        Ok(encoded)
     }
 
     fn decode(bytes: &[u8]) -> Result<(Self, usize), Error> {
@@ -126,7 +133,7 @@ fn xxh32(data: &[u8], seed: u32) -> u32 {
 fn test_record_encode_decode() {
     let data = b"hello world".to_vec();
     let record = Record::new(data.clone());
-    let encoded = record.encode();
+    let encoded = record.encode().unwrap();
 
     let (decoded, size) = Record::decode(&encoded).unwrap();
     assert_eq!(decoded.data, data);
@@ -139,7 +146,7 @@ fn test_record_types() {
     for record_type in [RecordType::Full, RecordType::First, RecordType::Middle, RecordType::Last] {
         let data = b"test data".to_vec();
         let record = Record::new_with_type(record_type, data.clone());
-        let encoded = record.encode();
+        let encoded = record.encode().unwrap();
 
         let (decoded, _) = Record::decode(&encoded).unwrap();
         assert_eq!(decoded.data, data);
@@ -151,7 +158,7 @@ fn test_record_types() {
 fn test_record_checksum_validation() {
     let data = b"hello world".to_vec();
     let record = Record::new(data);
-    let mut encoded = record.encode();
+    let mut encoded = record.encode().unwrap();
 
     // Corrupt the data
     encoded[RECORD_HEADER_SIZE] = encoded[RECORD_HEADER_SIZE].wrapping_add(1);
@@ -171,7 +178,7 @@ fn test_multiple_records() {
 
     let mut encoded = Vec::new();
     for record in &records {
-        encoded.extend_from_slice(&record.encode());
+        encoded.extend_from_slice(&record.encode().unwrap());
     }
 
     // Decode records one by one
@@ -188,7 +195,7 @@ fn test_multiple_records() {
 fn test_crc_computed_over_type_and_data() {
     let data = b"test".to_vec();
     let record = Record::new(data.clone());
-    let encoded = record.encode();
+    let encoded = record.encode().unwrap();
 
     // Manually verify CRC is computed over type + data
     let mut crc_data = vec![RecordType::Full as u8];
@@ -209,7 +216,7 @@ fn test_header_size() {
 fn test_incomplete_record() {
     let data = b"hello".to_vec();
     let record = Record::new(data);
-    let encoded = record.encode();
+    let encoded = record.encode().unwrap();
 
     // Try to decode with incomplete data
     let result = Record::decode(&encoded[..5]);
@@ -220,7 +227,7 @@ fn test_incomplete_record() {
 fn test_empty_record() {
     let data = Vec::new();
     let record = Record::new(data);
-    let encoded = record.encode();
+    let encoded = record.encode().unwrap();
 
     let (decoded, _size) = Record::decode(&encoded).unwrap();
     assert_eq!(decoded.data.len(), 0);
@@ -228,12 +235,14 @@ fn test_empty_record() {
 }
 
 #[test]
-#[should_panic(expected = "Record data too large")]
+#[test]
 fn test_large_record() {
     // RocksDB format uses u16 for size, max 65535 bytes
     let data = vec![0xAB; 70000]; // Exceeds u16::MAX
     let record = Record::new(data);
-    let _encoded = record.encode(); // Should panic
+    let result = record.encode();
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("too large"));
 }
 
 #[test]
@@ -241,7 +250,7 @@ fn test_max_size_record() {
     // Test maximum valid size (u16::MAX = 65535 bytes)
     let data = vec![0xAB; 65535];
     let record = Record::new(data.clone());
-    let encoded = record.encode();
+    let encoded = record.encode().unwrap();
 
     let (decoded, _size) = Record::decode(&encoded).unwrap();
     assert_eq!(decoded.data, data);
