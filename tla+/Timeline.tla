@@ -99,6 +99,11 @@ UCSendToEnsemble(messages) ==
                     message_channel' = message_channel @@ choosen_messages
 
 
+DropMessage(drop_message) ==
+    /\ drop_message \in DOMAIN message_channel
+    /\ message_channel[drop_message] >= 1
+    /\ message_channel' = [message_channel EXCEPT ![drop_message] = @ -1]
+
 DropAndSendAnother(drop_message, another_message) ==
     /\ drop_message \in DOMAIN message_channel
     /\ another_message \notin DOMAIN message_channel
@@ -246,7 +251,7 @@ OpenExistingTimeline(tid) ==
 HandleResFence(tid) ==
     LET timeline == timelines[tid]
     IN /\ timeline.reconciliation = ReconciliationFencing
-       /\ \E message \in DOMAIN message_channel
+       /\ \E message \in DOMAIN message_channel :
              /\ message.tid  = tid
              /\ message.type = FenceResponse
              /\ message_channel[message] >= 1
@@ -255,7 +260,7 @@ HandleResFence(tid) ==
              /\ LET lac == IF message.lac > timeline.writable_segment.start_offset -1
                            THEN message.lac
                            ELSE timeline.writable_segment.start_offset -1
-                   lafc == IF message.lafc > timeline.writable_segment.start_offset -1
+                    lafc == IF message.lafc > timeline.writable_segment.start_offset -1
                            THEN message.lafc
                            ELSE timeline.writable_segment.start_offset -1
                IN
@@ -263,11 +268,12 @@ HandleResFence(tid) ==
                                     timelines EXCEPT ![tid] =
                                         [
                                             @ EXCEPT !.fenced = @ \union {message.unit},
-                                                     !.reconciliation_lac = IF lafc > @ THEN lafc ELSE @,
+                                                     !.reconciliation_lafc = IF lafc > @ THEN lafc ELSE @,
                                                      !.reconciliation_lac = IF lac > @ THEN lac ELSE @,
                                                      !.lap = IF lafc > @ THEN lafc ELSE @
                                         ]
                                ]
+                /\ DropMessage(message)
                 /\ UNCHANGED << catalog_variables, sent_events, acked_events >>
 
 
@@ -277,7 +283,6 @@ HandleResFence(tid) ==
 
 
 \* Fencen handling
-
 ResFence(req) ==
     [
         type            |-> FenceResponse,
@@ -291,7 +296,7 @@ ResFence(req) ==
 
 
 UnitHandleReqFence ==
-    \E message \in message_channel :
+    \E message \in DOMAIN message_channel :
         /\ message.type = ReqFence
         /\ message_channel[message] >= 1
         /\ unit_timeline_term[message.unit] <= message.term
@@ -301,10 +306,39 @@ UnitHandleReqFence ==
 
 
 
+ResRecordEvent(req) ==
+    [
+        type            |-> RecordEventsResponse,
+        unit            |-> req.unit,
+        timeline_id     |-> req.timeline_id,
+        offset          |-> req.offset,
+        term            |-> req.term,
+        code            |-> Ok
+    ]
+
+
+
+UnitHandleReqRecordEvent ==
+    \E message \in DOMAIN message_channel :
+        /\ message.type = RecordEventsRequest
+        /\ message_channel[message] >= 1
+        /\ ~\E queue_message \in DOMAIN message_channel:
+                /\ queue_message.type           = RecordEventsRequest
+                /\ message_channel[message]     >= 1
+                /\ queue_message.term           = message.term
+                /\ queue_message.timeline       = message.timeline
+                /\ queue_message.unit           = message.unit
+                /\ queue_message.start_offset   < message.start_offset
+        /\ unit_timeline_term[message.unit] <= message.term
+        /\ unit_timeline_term' = [unit_timeline_term EXCEPT ![message.unit] = message.term]
+        /\ DropAndSendAnother(message, ResRecordEvent(message))
+        /\ UNCHANGED << timelines,  catalog_variables, sent_events, acked_events>>
+
+
 
 OpenTimeline(tid) ==
     \/ OpenNewTimeline(tid)
-    \/ OpenExistingTimeline(tid)
+\*    \/ OpenExistingTimeline(tid)
 
 
 
@@ -342,7 +376,7 @@ RecordEvent(timeline, event) ==
 
 
 
-TimelineRecordEvents(tid) ==
+TimelineRecordEvent(tid) ==
     LET t == timelines[tid]
         IN
             /\ t.status = TimelineStatusOpen
@@ -354,6 +388,48 @@ TimelineRecordEvents(tid) ==
                         /\ RecordEvent(t, entry.data)
                         /\ sent_events' = sent_events \union {event_data}
             /\ UNCHANGED << timeline_variables, catalog_variables, acked_events>>
+
+
+
+
+GetAckedOffset(timeline, acked, quorum) ==
+   IF timeline.lac < timeline.lap
+   THEN
+        IF \E offset \in (timeline.lac + 1)..timeline.lap : \A another_offset \in (timeline.lac + 1)..offset : Cardinality(acked[another_offset]) >= quorum
+        THEN
+            CHOOSE offset \in (timeline.lac + 1)..timeline.lap : /\ \A another_offset \in (timeline.lac + 1)..offset : Cardinality(acked(another_offset)) >= quorum
+                /\ ~\E offset_2 \in (timeline.lac + 1)..timeline.lap :
+                        /\ offset_2 > offset
+                        /\ \A offset_3 \in (timeline.lac + 1)..offset_2 : Cardinality(acked(offset_3) >= quorum)
+        ELSE timeline.lac
+   ELSE
+    timeline.lac
+
+
+TimelineHandleRecordEvenResponse(tid) ==
+    LET t == timelines[tid]
+    IN
+        /\ t.status = TimelineStatusOpen
+        /\ \E message \in DOMAIN message_channel :
+                \*    message is valid
+                /\ message.type             =  RecordEventsResponse
+                /\ message_channel[tid]     >= 1
+                /\ message.code             = Ok
+                /\ message.unit  \in t.writable_segment.ensemble
+                /\ LET acked == [timeline.acked EXCEPT ![message.offset] = @ \union {message.unit}]
+                    IN LET lac  == GetAckedOffset(t, message.offset, TimelineAQ)
+                           lafc == GetAckedOffset(t, message.offset, TimelineWQ)
+                       IN
+                        /\ timelines' = [timelines EXCEPT ![t.id] = [
+                                                                        t EXCEPT !.acked = acked,
+                                                                                 !.lac              = IF lac  > @ THEN lac ELSE @,
+                                                                                 !.lafc             = IF lafc > @ THEN lafc ELSE @,
+                                                                                 !.inflight_records = {op \in t.inflight_records : op.offset > lafc}
+                                                                    ]
+                                        ]
+                        /\ acked_events' = IF lac >= message.offset THEN acked_events \union {message.record.data} ELSE acked_events
+                        /\ DropMessage(message_channel)
+        /\ UNCHANGED << catalog_variables, sent_events>>
 
 
 Init ==
@@ -372,8 +448,11 @@ Init ==
     /\ acked_events = {}
 
 Next ==
+    \/ UnitHandleRecordEventRequest
     \/ \E tid \in Timelines :
         \/ OpenTimeline(tid)
+        \/ TimelineRecordEvent(tid)
+        \/ TimelineHandleRecordEvenResponse(tid)
 
 
 ===============================================================================
