@@ -58,10 +58,12 @@ ASSUME Cardinality(Events) + Cardinality(Timelines) >= 1
 VARIABLES
     catalogs,
     units,
-    timelines
+    timelines,
+    sent_events,
+    acked_events
 
 
-vars == << units, catalogs, message_channel, timelines >>
+vars == << units, catalogs, message_channel, timelines, sent_events, acked_events>>
 
 
 
@@ -181,7 +183,7 @@ OpenNewTimeline(tid) ==
                                                          !.segments =  Append(timeline_catalog.segments, writable_segment)
                                             ]
                                     ]
-                     /\ UNCHANGED << units, message_channel>>
+                     /\ UNCHANGED << units, message_channel, sent_events, acked_events>>
 
 
 
@@ -215,8 +217,9 @@ ResRecordEvent(req) ==
 
 TimelineRecordEvent(tid) ==
     /\ timelines[tid].status = TimelineStatusOpen
+    /\ \E payload \in Events : payload \notin sent_events
     /\ LET timeline == timelines[tid]
-           payload == CHOOSE payload \in Events : payload
+           payload == CHOOSE payload \in Events : payload \notin sent_events
            event == [offset |-> timeline.lrs + 1, data |-> payload]
        IN
             /\ UCSendToEnsemble(ReqRecordEvent(timeline, event, timeline.writable_segment.ensemble, FALSE))
@@ -231,7 +234,8 @@ TimelineRecordEvent(tid) ==
                                                      }
                                                  ]
                              ]
-        /\ UNCHANGED << units, catalogs >>
+            /\ sent_events' = sent_events \union {payload}
+        /\ UNCHANGED << units, catalogs, acked_events>>
 
 IsEarlistReqRecordEvent(message) ==
      ~\E queue_message \in DOMAIN message_channel:
@@ -247,19 +251,24 @@ UnitHandleReqRecordEvent ==
         /\ message.type = RecordEventRequest
         /\ message_channel[message] >= 1
         /\ IsEarlistReqRecordEvent(message)
-        /\ units[message.unit].term <= message.term
-        /\ units' = [units EXCEPT ![message.unit] = [
-                            @ EXCEPT !.term     = message.term,
-                                     !.events   = IF message.trunc
-                                                  THEN {event \in @ : event.offset < message.event.offset } \union message.event
-                                                  ELSE (@ \ {event \in @ : event.offset = message.event.offset}) \union {message.event},
-                                     !.lra      = IF message.lra  > @ THEN message.lra  ELSE @,
-                                     !.lrfa     = IF message.lrfa > @ THEN message.lrfa ELSE @
-
-                            ]
-                     ]
+        /\ units[message.unit].timeline_term[message.timeline_id] <= message.term
+        /\ LET unit == units[message.unit]
+                new_timeline_events == [unit.timeline_events EXCEPT ![message.timeline_id] =
+                                            IF message.trunc
+                                            THEN {event \in @ : event.offset < message.event.offset } \union {message.event}
+                                            ELSE (@ \ {event \in @ : event.offset = message.event.offset}) \union {message.event}]
+                new_timeline_term == [unit.timeline_term EXCEPT ![message.timeline_id] = message.term]
+                new_timeline_lra == [unit.timeline_lra EXCEPT ![message.timeline_id] = IF message.lra > @ THEN message.lra ELSE @]
+                new_timeline_lrfa == [unit.timeline_lrfa EXCEPT ![message.timeline_id] = IF message.lrfa > @ THEN message.lrfa ELSE @]
+           IN
+                units' = [units EXCEPT ![message.unit] = [
+                             timeline_term |-> new_timeline_term,
+                             timeline_events |-> new_timeline_events,
+                             timeline_lra |-> new_timeline_lra,
+                             timeline_lrfa |-> new_timeline_lrfa
+                         ]]
         /\ UCAckAndSendAnother(message, ResRecordEvent(message))
-        /\ UNCHANGED << timelines, catalogs>>
+        /\ UNCHANGED << timelines, catalogs, sent_events, acked_events>>
 
 
 GetAckedOffset(timeline, acked, quorum) ==
@@ -299,7 +308,7 @@ TimelineHandleRecordEvenResponse(tid) ==
                                         ]
                             ]
             /\ UCAckMessage(message)
-    /\ UNCHANGED << units, catalogs>>
+    /\ UNCHANGED << units, catalogs, sent_events, acked_events>>
 
 
 InitTimeline(tid) ==
@@ -346,6 +355,8 @@ Init ==
     /\ timelines        = [tid \in Timelines    |-> InitTimeline(tid)]
     /\ catalogs         = [tid \in Timelines    |-> InitCatalogs(tid)]
     /\ message_channel  = [message \in {}       |-> 0]
+    /\ sent_events      = {}
+    /\ acked_events     = {}
 
 Next ==
     \/ UnitHandleReqRecordEvent
