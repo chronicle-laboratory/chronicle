@@ -468,3 +468,6 @@ Symmetry == Permutations(Events) \cup Permutations(Units)
 Spec == Init /\ [][Next]_vars
 
 =========================================================
+
+
+\* Why the lrfa moved forward without fully replicated?
