@@ -30,11 +30,6 @@ CONSTANTS
     InvalidTerm,
     Null,
 
-    Timelines,
-    TimelineWQ,
-    TimelineAQ,
-    Events,
-
     \* timeline status
     TimelineStatusOpen,
     TimelineStatusInRecovery,
@@ -121,8 +116,8 @@ Timeline ==
         id                       : Timelines,
         term                     : Nat,
         segments                 : Seq(Segment),
-        writable_segment         : Segment \union {Null},
-        inflight_record_event_req: SUBSET InflightEvent,
+        writable_segment         : Segment \cup {Null},
+        inflight_record_event_reqs: SUBSET InflightEvent,
         status                   : TimelineStatus,
         lrs                      : Nat,
         lra                      : Nat,
@@ -149,20 +144,23 @@ IsValidEnsemble(ensemble, include_units, exclude_units) ==
     /\ ensemble \intersect exclude_units = {}
     /\ include_units \intersect ensemble = include_units
 
-FindEnsemble(tid, available, quarantined) ==
+FindEnsemble(available, quarantined) ==
     CHOOSE ensemble \in SUBSET Units : IsValidEnsemble(ensemble, available, quarantined)
+
+
+
 
 (***************************************************************************
 ACTION: OPEN NEW TIMELINE
 ***************************************************************************)
 
 OpenNewTimeline(tid) ==
-    /\  LET timeline == timelines[tid]
+    LET timeline == timelines[tid]
             timeline_catalog == catalogs[tid]
         IN
              /\ timeline_catalog.version = Null
              /\ timeline.catalog_version = Null
-             /\ LET writable_segment == [id |-> 1, ensemble |->  FindEnsemble(tid, {}, {}), start_offset |-> 1]
+             /\ LET writable_segment == [id |-> 1, ensemble |->  FindEnsemble({}, {}), start_offset |-> 1]
                 IN
                      /\ timelines' = [
                                         timelines EXCEPT ![tid] =
@@ -191,7 +189,7 @@ OpenNewTimeline(tid) ==
 ACTION: RECROD EVENT
 ***************************************************************************)
 
-ReqRecordEvent(timeline, event, ensemble, trunc) ==
+ReqRecordEvents(timeline, event, ensemble, trunc) ==
     {
         [
             type             |-> RecordEventRequest,
@@ -217,15 +215,16 @@ ResRecordEvent(req) ==
 
 TimelineRecordEvent(tid) ==
     /\ timelines[tid].status = TimelineStatusOpen
+    /\ timelines[tid].lrs - timelines[tid].lra < 1
     /\ \E payload \in Events : payload \notin sent_events
     /\ LET timeline == timelines[tid]
            payload == CHOOSE payload \in Events : payload \notin sent_events
            event == [offset |-> timeline.lrs + 1, data |-> payload]
        IN
-            /\ UCSendToEnsemble(ReqRecordEvent(timeline, event, timeline.writable_segment.ensemble, FALSE))
+            /\ UCSendToEnsemble(ReqRecordEvents(timeline, event, timeline.writable_segment.ensemble, FALSE))
             /\ timelines' = [timelines EXCEPT ![timeline.id] = [
                                             @ EXCEPT !.lrs = timeline.lrs + 1,
-                                                     !.inflight_record_event_req = @ \union {
+                                                     !.inflight_record_event_reqs = @ \cup {
                                                             [
                                                                 event      |->  [offset |-> timeline.lrs + 1, data |-> payload],
                                                                 segment_id |->  timeline.writable_segment.id,
@@ -234,7 +233,7 @@ TimelineRecordEvent(tid) ==
                                                      }
                                                  ]
                              ]
-            /\ sent_events' = sent_events \union {payload}
+            /\ sent_events' = sent_events \cup {payload}
         /\ UNCHANGED << units, catalogs, acked_events>>
 
 IsEarlistReqRecordEvent(message) ==
@@ -255,10 +254,10 @@ UnitHandleReqRecordEvent ==
         /\ LET unit == units[message.unit]
                 new_timeline_events == [unit.timeline_events EXCEPT ![message.timeline_id] =
                                             IF message.trunc
-                                            THEN {event \in @ : event.offset < message.event.offset } \union {message.event}
-                                            ELSE (@ \ {event \in @ : event.offset = message.event.offset}) \union {message.event}]
+                                            THEN {event \in @ : event.offset < message.event.offset } \cup {message.event}
+                                            ELSE (@ \ {event \in @ : event.offset = message.event.offset}) \cup {message.event}]
                 new_timeline_term == [unit.timeline_term EXCEPT ![message.timeline_id] = message.term]
-                new_timeline_lra == [unit.timeline_lra EXCEPT ![message.timeline_id] = IF message.lra > @ THEN message.lra ELSE @]
+                new_timeline_lra  == [unit.timeline_lra EXCEPT ![message.timeline_id] = IF message.lra > @ THEN message.lra ELSE @]
                 new_timeline_lrfa == [unit.timeline_lrfa EXCEPT ![message.timeline_id] = IF message.lrfa > @ THEN message.lrfa ELSE @]
            IN
                 units' = [units EXCEPT ![message.unit] = [
@@ -292,11 +291,16 @@ TimelineHandleRecordEvenResponse(tid) ==
         /\ message.type             =  RecordEventResponse
         /\ message_channel[message] >= 1
         /\ message.code             = Ok
-        /\ message.unit             \in timelines[tid].writable_segment.ensemble
+        \* Accept responses from any unit in the current writable ensemble
+        \* OR from units that were in a previous ensemble for inflight events
+        /\ \/ message.unit \in timelines[tid].writable_segment.ensemble
+           \/ \E inflight \in timelines[tid].inflight_record_event_reqs :
+                /\ inflight.event.offset = message.event.offset
+                /\ message.unit \in inflight.ensemble
         /\ LET
                 timeline == timelines[tid]
                 event    == message.event
-                acked    == [timeline.acked EXCEPT ![event.offset] = @ \union {message.unit}]
+                acked    == [timeline.acked EXCEPT ![event.offset] = @ \cup {message.unit}]
                 lra      == GetAckedOffset(timeline, acked, TimelineAQ)
                 lrfa     == GetAckedOffset(timeline, acked, TimelineWQ)
            IN
@@ -304,11 +308,106 @@ TimelineHandleRecordEvenResponse(tid) ==
                                         timeline EXCEPT !.acked                     = acked,
                                                         !.lra                       = IF lra  > @ THEN lra ELSE @,
                                                         !.lrfa                      = IF lrfa > @ THEN lrfa ELSE @,
-                                                        !.inflight_record_event_req = {op \in timeline.inflight_record_event_req : op.event.offset > lrfa}
+                                                        !.inflight_record_event_reqs = {op \in timeline.inflight_record_event_reqs : op.event.offset > lrfa}
                                         ]
                             ]
+            /\ acked_events' = IF lra >= message.event.offset THEN acked_events \cup {message.event.data} ELSE acked_events
             /\ UCAckMessage(message)
-    /\ UNCHANGED << units, catalogs, sent_events, acked_events>>
+    /\ UNCHANGED << units, catalogs, sent_events>>
+
+
+(***************************************************************************
+ACTION: RETRY INFLIGHT RECORD EVENT
+***************************************************************************)
+
+TimelineRetryInflightRecordEvent(tid) ==
+    LET timeline == timelines[tid]
+    IN
+       /\  timeline.status = TimelineStatusOpen
+       /\  \E req \in timeline.inflight_record_event_reqs :
+            /\ req.segment_id # timeline.writable_segment.id
+            /\ req.ensemble   # timeline.writable_segment.ensemble
+            /\ ~\E a_req \in timeline.inflight_record_event_reqs :
+                /\ a_req.segment_id    = req.segment_id
+                /\ a_req.ensemble      = req.ensemble
+                /\ a_req.event.offset  < req.event.offset
+            /\ LET target_units == timeline.writable_segment.ensemble \ req.ensemble
+                   replaced_req == [
+                                        event       |-> req.event,
+                                        segment_id  |-> timeline.writable_segment.id,
+                                        ensemble    |-> timeline.writable_segment.ensemble
+                                    ]
+               IN
+                /\ UCSendToEnsemble(ReqRecordEvents(timeline, req, target_units, FALSE))
+                /\ timelines' = [timelines EXCEPT ![timeline.id] = [ timeline EXCEPT !.inflight_record_event_reqs = (@ \ {req}) \cup {replaced_req}]]
+                /\ UNCHANGED << units, catalogs, sent_events, acked_events>>
+
+
+(***************************************************************************
+ACTION: ENSEMBLE CHANGE
+***************************************************************************)
+
+
+HasFailureMessage(timeline, failure_unit) ==
+    \E message \in DOMAIN message_channel :
+        /\ message.type                 \in {RecordEventRequest, RecordEventResponse} 
+        /\ message_channel[message]     = -1
+        /\ message.timeline_id          = timeline.id
+        /\ message.unit                 = failure_unit
+        /\ message.term                 = timeline.term
+
+CleanupFailureMessage(timeline, failure_unit) ==
+    LET NeedClear(message) ==
+        /\ message.type                 \in {RecordEventRequest, RecordEventResponse}
+        /\ message_channel[message]     = -1
+        /\ message.timeline_id          = timeline.id
+        /\ message.unit                 \in failure_unit
+        /\ message.term                 = timeline.term
+    IN message_channel' = [message \in DOMAIN message_channel |-> IF NeedClear(message) THEN 0 ELSE message_channel[message]]
+
+AppendOrModifySegment(timeline, start_offset, new_ensemble) ==
+   IF start_offset = timeline.writable_segment.start_offset
+       THEN [timeline.segments EXCEPT ![Len(timeline.segments)].ensemble = new_ensemble]
+       ELSE Append(timeline.segments, [
+               id           |-> Len(timeline.segments) + 1,
+               ensemble     |-> new_ensemble,
+               start_offset |-> start_offset
+       ])
+
+
+TimelineEnsembleChange(tid) ==
+    LET timeline            == timelines[tid]
+        NoStaleInflightReq  ==
+           /\ ~\E req \in timeline.inflight_record_event_reqs :
+                   /\ \/ req.ensemble      # timeline.writable_segment.ensemble
+                      \/ req.segment_id    # timeline.writable_segment.id
+    IN
+        /\ NoStaleInflightReq
+        /\ timeline.status       = TimelineStatusOpen
+        /\ \E failure_unit \in SUBSET timeline.writable_segment.ensemble :
+            /\ \A unit \in failure_unit :  HasFailureMessage(timeline, failure_unit)
+            /\ LET new_ensemble                             == FindEnsemble(timeline.writable_segment.ensemble \ failure_unit, failure_unit)
+                   start_offset                             == timeline.lrfa + 1
+                   new_segments                             == AppendOrModifySegment(timeline, start_offset, new_ensemble)
+                   next_catalog_version                     == catalogs[tid].version + 1
+                   FilterAcked(acked, offset)               == IF offset >= start_offset THEN timeline.acked[offset] \ failure_unit ELSE timeline.acked[offset]
+                   UnitPin(_timeline, _unit, _start_offset) == IF _start_offset > _timeline.lra THEN FALSE ELSE
+                                                                        \E offset \in _start_offset.._timeline.lra : _unit \in _timeline.acked[offset]
+               IN
+               /\  \A unit  \in failure_unit : ~UnitPin(timeline, unit, start_offset)
+               /\  catalogs' = [catalogs EXCEPT ![tid] = [catalogs[tid] EXCEPT !.segments = new_segments,
+                                                                          !.version  = next_catalog_version
+                                                         ]
+                                ]
+                /\ timelines' = [timelines EXCEPT ![tid] = [timelines[tid] EXCEPT !.catalog_version = next_catalog_version,
+                                                                                  !.acked           = [offset \in DOMAIN timelines[tid].acked |-> FilterAcked(timeline.acked, offset)],
+                                                                                  !.segments        = new_segments
+
+                                    ]
+                ]
+                /\ CleanupFailureMessage(timeline, failure_unit)
+                /\ UNCHANGED <<acked_events, sent_events, units>>
+
 
 
 InitTimeline(tid) ==
@@ -317,7 +416,7 @@ InitTimeline(tid) ==
         term                                |-> 0,
         segments                            |-> <<>>,
         writable_segment                    |-> Null,
-        inflight_record_event_req           |-> {},
+        inflight_record_event_reqs           |-> {},
         status                              |-> Null,
         lrs                                 |-> 0,
         lra                                 |-> 0,
@@ -364,11 +463,15 @@ Next ==
         \/ OpenNewTimeline(tid)
         \/ TimelineRecordEvent(tid)
         \/ TimelineHandleRecordEvenResponse(tid)
+        \/ TimelineRetryInflightRecordEvent(tid)
+        \/ TimelineEnsembleChange(tid)
 
 TypeOK ==
     /\ units \in [Units -> Unit]
     /\ catalogs \in [Timelines -> TimelineCatalog]
     /\ timelines \in [Timelines -> Timeline]
+
+Symmetry == Permutations(Events) \cup Permutations(Units)
 
 Spec == Init /\ [][Next]_vars
 
