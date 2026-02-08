@@ -144,11 +144,11 @@ IsValidEnsemble(ensemble, include_units, exclude_units) ==
     /\ ensemble \intersect exclude_units = {}
     /\ include_units \intersect ensemble = include_units
 
-FindEnsemble(available, quarantined) ==
+FindEnsemble(tid, available, quarantined) ==
     CHOOSE ensemble \in SUBSET Units : IsValidEnsemble(ensemble, available, quarantined)
 
-
-
+HasTargetEnsemble(tid, available, quarantined) ==
+    \E ensemble \in SUBSET Units : IsValidEnsemble(ensemble, available, quarantined)
 
 (***************************************************************************
 ACTION: OPEN NEW TIMELINE
@@ -160,7 +160,7 @@ OpenNewTimeline(tid) ==
         IN
              /\ timeline_catalog.version = Null
              /\ timeline.catalog_version = Null
-             /\ LET writable_segment == [id |-> 1, ensemble |->  FindEnsemble({}, {}), start_offset |-> 1]
+             /\ LET writable_segment == [id |-> 1, ensemble |->  FindEnsemble(tid, {}, {}), start_offset |-> 1]
                 IN
                      /\ timelines' = [
                                         timelines EXCEPT ![tid] =
@@ -269,21 +269,15 @@ UnitHandleReqRecordEvent ==
         /\ UCAckAndSendAnother(message, ResRecordEvent(message))
         /\ UNCHANGED << timelines, catalogs, sent_events, acked_events>>
 
+RECURSIVE FindMaxContinuousAck(_, _, _, _)
+
+FindMaxContinuousAck(curr, max_idx, acked, quorum) ==
+    IF curr > max_idx THEN max_idx
+    ELSE IF Cardinality(acked[curr]) < quorum THEN curr - 1
+    ELSE FindMaxContinuousAck(curr + 1, max_idx, acked, quorum)
 
 GetAckedOffset(timeline, acked, quorum) ==
-   IF timeline.lra < timeline.lrs
-   THEN
-        IF \E offset0 \in (timeline.lra + 1)..timeline.lrs : \A offset1 \in (timeline.lra + 1)..offset0 : Cardinality(acked[offset1]) >= quorum
-        THEN
-            CHOOSE offset0 \in (timeline.lra + 1)..timeline.lrs :
-                                /\ \A offset1 \in (timeline.lra + 1)..offset0 : Cardinality(acked[offset1]) >= quorum
-
-                /\ ~\E offset_2 \in (timeline.lra + 1)..timeline.lrs :
-                        /\ offset_2 > offset0
-                        /\ \A offset_3 \in (timeline.lra + 1)..offset_2 : Cardinality(acked[offset_3]) >= quorum
-        ELSE timeline.lra
-   ELSE
-    timeline.lra
+    FindMaxContinuousAck(timeline.lra + 1, timeline.lrs, acked, quorum)
 
 TimelineHandleRecordEvenResponse(tid) ==
     /\ timelines[tid].status = TimelineStatusOpen
@@ -304,6 +298,7 @@ TimelineHandleRecordEvenResponse(tid) ==
                 lra      == GetAckedOffset(timeline, acked, TimelineAQ)
                 lrfa     == GetAckedOffset(timeline, acked, TimelineWQ)
            IN
+            /\ PrintT(<<"DEBUG: ACK", "acked", acked, "lra", lra,  "lrfa", lrfa>>)
             /\ timelines' = [timelines EXCEPT ![timeline.id] = [
                                         timeline EXCEPT !.acked                     = acked,
                                                         !.lra                       = IF lra  > @ THEN lra ELSE @,
@@ -325,8 +320,6 @@ TimelineRetryInflightRecordEvent(tid) ==
     IN
        /\  timeline.status = TimelineStatusOpen
        /\  \E req \in timeline.inflight_record_event_reqs :
-            /\ req.segment_id # timeline.writable_segment.id
-            /\ req.ensemble   # timeline.writable_segment.ensemble
             /\ ~\E a_req \in timeline.inflight_record_event_reqs :
                 /\ a_req.segment_id    = req.segment_id
                 /\ a_req.ensemble      = req.ensemble
@@ -338,7 +331,7 @@ TimelineRetryInflightRecordEvent(tid) ==
                                         ensemble    |-> timeline.writable_segment.ensemble
                                     ]
                IN
-                /\ UCSendToEnsemble(ReqRecordEvents(timeline, req, target_units, FALSE))
+                /\ UCSendToEnsemble(ReqRecordEvents(timeline, req.event, target_units, FALSE))
                 /\ timelines' = [timelines EXCEPT ![timeline.id] = [ timeline EXCEPT !.inflight_record_event_reqs = (@ \ {req}) \cup {replaced_req}]]
                 /\ UNCHANGED << units, catalogs, sent_events, acked_events>>
 
@@ -363,7 +356,7 @@ CleanupFailureMessage(timeline, failure_unit) ==
         /\ message.timeline_id          = timeline.id
         /\ message.unit                 \in failure_unit
         /\ message.term                 = timeline.term
-    IN message_channel' = [message \in DOMAIN message_channel |-> IF NeedClear(message) THEN 0 ELSE message_channel[message]]
+    IN message_channel' = [m \in {m \in DOMAIN message_channel : ~NeedClear(m)} |-> message_channel[m]]
 
 AppendOrModifySegment(timeline, start_offset, new_ensemble) ==
    IF start_offset = timeline.writable_segment.start_offset
@@ -377,35 +370,33 @@ AppendOrModifySegment(timeline, start_offset, new_ensemble) ==
 
 TimelineEnsembleChange(tid) ==
     LET timeline            == timelines[tid]
-        NoStaleInflightReq  ==
-           /\ ~\E req \in timeline.inflight_record_event_reqs :
-                   /\ \/ req.ensemble      # timeline.writable_segment.ensemble
-                      \/ req.segment_id    # timeline.writable_segment.id
     IN
-        /\ NoStaleInflightReq
         /\ timeline.status       = TimelineStatusOpen
-        /\ \E failure_unit \in SUBSET timeline.writable_segment.ensemble :
-            /\ \A unit \in failure_unit :  HasFailureMessage(timeline, failure_unit)
-            /\ LET new_ensemble                             == FindEnsemble(timeline.writable_segment.ensemble \ failure_unit, failure_unit)
+        /\ \E failure_units \in SUBSET timeline.writable_segment.ensemble :
+            /\ failure_units # {}
+            /\ \A unit \in failure_units : HasFailureMessage(timeline, unit)
+            /\ HasTargetEnsemble(tid, timeline.writable_segment.ensemble \ failure_units, failure_units)
+            /\ LET new_ensemble                             == FindEnsemble(tid, timeline.writable_segment.ensemble \ failure_units, failure_units)
                    start_offset                             == timeline.lrfa + 1
                    new_segments                             == AppendOrModifySegment(timeline, start_offset, new_ensemble)
                    next_catalog_version                     == catalogs[tid].version + 1
-                   FilterAcked(acked, offset)               == IF offset >= start_offset THEN timeline.acked[offset] \ failure_unit ELSE timeline.acked[offset]
+                   FilterAcked(acked, offset)               == IF offset >= start_offset THEN timeline.acked[offset] \ failure_units ELSE timeline.acked[offset]
                    UnitPin(_timeline, _unit, _start_offset) == IF _start_offset > _timeline.lra THEN FALSE ELSE
                                                                         \E offset \in _start_offset.._timeline.lra : _unit \in _timeline.acked[offset]
                IN
-               /\  \A unit  \in failure_unit : ~UnitPin(timeline, unit, start_offset)
+               /\  \A unit  \in failure_units : ~UnitPin(timeline, unit, start_offset)
+               /\  catalogs[tid].version = timeline.catalog_version
                /\  catalogs' = [catalogs EXCEPT ![tid] = [catalogs[tid] EXCEPT !.segments = new_segments,
                                                                           !.version  = next_catalog_version
                                                          ]
                                 ]
-                /\ timelines' = [timelines EXCEPT ![tid] = [timelines[tid] EXCEPT !.catalog_version = next_catalog_version,
-                                                                                  !.acked           = [offset \in DOMAIN timelines[tid].acked |-> FilterAcked(timeline.acked, offset)],
-                                                                                  !.segments        = new_segments
-
+                /\ timelines' = [timelines EXCEPT ![tid] = [timelines[tid] EXCEPT !.catalog_version     = next_catalog_version,
+                                                                                  !.acked               = [offset \in DOMAIN timelines[tid].acked |-> FilterAcked(timeline.acked, offset)],
+                                                                                  !.segments            = new_segments,
+                                                                                  !.writable_segment    = FindLast(new_segments)
                                     ]
                 ]
-                /\ CleanupFailureMessage(timeline, failure_unit)
+                /\ CleanupFailureMessage(timeline, failure_units)
                 /\ UNCHANGED <<acked_events, sent_events, units>>
 
 
@@ -472,6 +463,7 @@ TypeOK ==
     /\ timelines \in [Timelines -> Timeline]
 
 Symmetry == Permutations(Events) \cup Permutations(Units)
+
 
 Spec == Init /\ [][Next]_vars
 

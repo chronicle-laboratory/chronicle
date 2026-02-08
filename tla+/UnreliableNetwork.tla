@@ -21,7 +21,7 @@ UCSendToEnsemble(messages) ==
 UCAckMessage(message) ==
     /\ message \in DOMAIN message_channel
     /\ message_channel[message] >= 1
-    /\ message_channel' = [message_channel EXCEPT ![message] = @ -1]
+    /\ message_channel' = [m \in DOMAIN message_channel \ {message} |-> message_channel[m]]
 
 
 UCAckAndSendAnother(ack_message, another_message) ==
@@ -29,8 +29,7 @@ UCAckAndSendAnother(ack_message, another_message) ==
     /\ another_message \notin DOMAIN message_channel
     /\ message_channel[ack_message] >= 1
     /\ \E loss_factor \in {-1, 1} :
-        /\ message_channel' = [message_channel EXCEPT ![ack_message] = @-1] @@ (another_message :> loss_factor)
-
+        /\ message_channel' = [m \in DOMAIN message_channel \ {ack_message} |-> message_channel[m]] @@ (another_message :> loss_factor)
 
 
 ========================================================
