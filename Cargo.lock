@@ -707,14 +707,57 @@ dependencies = [
 ]
 
 [[package]]
+name = "chronicle-aeon"
+version = "0.1.0"
+dependencies = [
+ "chronicle-proto",
+ "serde",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "chronicle-cli"
 version = "0.1.0"
 dependencies = [
+ "chronicled",
  "clap",
+ "libc",
  "libchronicle",
+ "serde",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "chronicle-logic"
+version = "0.1.0"
+dependencies = [
+ "chronicle-proto",
+ "serde",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "chronicle-prism"
+version = "0.1.0"
+dependencies = [
+ "chronicle-proto",
+ "serde",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

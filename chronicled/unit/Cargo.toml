@@ -7,7 +7,7 @@ resolver = "3"
 
 [dependencies]
 chronicle-proto = { workspace = true }
-catalog = { path = "../catalog" }
+catalog = { path = "../../catalog" }
 clap = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
