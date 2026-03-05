@@ -89,6 +89,15 @@ impl Catalog for MemoryCatalog {
         Ok(tc)
     }
 
+    async fn delete_timeline(&self, name: &str) -> Result<(), CatalogError> {
+        self.timelines
+            .lock()
+            .unwrap()
+            .remove(name)
+            .map(|_| ())
+            .ok_or_else(|| CatalogError::NotFound(name.to_string()))
+    }
+
     async fn list_timelines(&self) -> Result<Vec<TimelineCatalog>, CatalogError> {
         Ok(self.timelines.lock().unwrap().values().cloned().collect())
     }
@@ -154,6 +163,23 @@ mod tests {
 
         let err = catalog.create_timeline("t1").await.unwrap_err();
         assert!(matches!(err, CatalogError::AlreadyExists(_)));
+    }
+
+    #[tokio::test]
+    async fn timeline_delete() {
+        let catalog = MemoryCatalog::new();
+        catalog.create_timeline("t1").await.unwrap();
+
+        catalog.delete_timeline("t1").await.unwrap();
+        let err = catalog.get_timeline("t1").await.unwrap_err();
+        assert!(matches!(err, CatalogError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn timeline_delete_not_found() {
+        let catalog = MemoryCatalog::new();
+        let err = catalog.delete_timeline("missing").await.unwrap_err();
+        assert!(matches!(err, CatalogError::NotFound(_)));
     }
 
     #[tokio::test]

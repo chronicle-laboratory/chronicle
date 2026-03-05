@@ -117,6 +117,17 @@ impl Catalog for OxiaCatalog {
         Ok(created)
     }
 
+    async fn delete_timeline(&self, name: &str) -> Result<(), CatalogError> {
+        let key = Self::timeline_key(name);
+        debug!("delete_timeline: key={}", key);
+
+        self.client.delete(key).await.map_err(|e| match e {
+            OxiaError::KeyNotFound() => CatalogError::NotFound(name.to_string()),
+            other => CatalogError::from(other),
+        })?;
+        Ok(())
+    }
+
     async fn list_timelines(&self) -> Result<Vec<TimelineCatalog>, CatalogError> {
         let min_key = KEY_PREFIX.to_string();
         let max_key = format!("{}\x7f", KEY_PREFIX);

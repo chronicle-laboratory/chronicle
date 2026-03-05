@@ -1,6 +1,7 @@
 use crate::actor::Envelope;
 use crate::actor::read_handle_group::ReadHandleGroup;
 use crate::actor::write_handle_group::WriteActorGroup;
+use crate::unit::admin_service::STATE_READONLY;
 use crate::unit::timeline_state::TimelineStateManager;
 use chronicle_proto::pb_ext::chronicle_server::Chronicle;
 use chronicle_proto::pb_ext::{
@@ -9,6 +10,7 @@ use chronicle_proto::pb_ext::{
 };
 use futures_util::StreamExt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::codegen::BoxStream;
@@ -18,6 +20,7 @@ pub struct UnitService {
     write_group: Arc<WriteActorGroup>,
     read_group: Arc<ReadHandleGroup>,
     timeline_state: Arc<TimelineStateManager>,
+    unit_state: Arc<AtomicU8>,
 }
 
 impl UnitService {
@@ -25,11 +28,13 @@ impl UnitService {
         write_group: Arc<WriteActorGroup>,
         read_group: Arc<ReadHandleGroup>,
         timeline_state: Arc<TimelineStateManager>,
+        unit_state: Arc<AtomicU8>,
     ) -> Self {
         Self {
             write_group,
             read_group,
             timeline_state,
+            unit_state,
         }
     }
 }
@@ -42,6 +47,11 @@ impl Chronicle for UnitService {
         &self,
         request: Request<Streaming<RecordEventsRequest>>,
     ) -> Result<Response<Self::RecordStream>, Status> {
+        // Reject writes when unit is READONLY.
+        if self.unit_state.load(Ordering::Relaxed) == STATE_READONLY {
+            return Err(Status::unavailable("unit is readonly"));
+        }
+
         let mut stream = request.into_inner();
         let (tx, rx) = mpsc::channel(4);
         let write_group = self.write_group.clone();
@@ -56,7 +66,7 @@ impl Chronicle for UnitService {
                                 request: item,
                                 res_tx: item_tx,
                             };
-                            if let Err(e) = write_group.dispatch(envelope).await {
+                            if let Err(_e) = write_group.dispatch(envelope).await {
                                 let response = RecordEventsResponse {
                                     items: vec![RecordEventsResponseItem {
                                         code: StatusCode::InvalidTerm.into(),

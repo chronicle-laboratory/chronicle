@@ -1,4 +1,4 @@
-<img src="docs/logo-min.png" alt="Chronicle" width="200" align="right">
+<img src="logo-min.png" alt="Chronicle" width="200" align="right">
 
 ## Chronicle
 

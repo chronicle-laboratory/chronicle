@@ -10,6 +10,8 @@ use chronicle_proto::pb_storage;
 use lru::LruCache;
 use prost::Message;
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use crate::error::unit_error::UnitError;
 use crate::option::unit_options::IoMode;
 use crate::segment::Segment;
@@ -33,6 +35,8 @@ pub struct SegmentMeta {
     pub size: u64,
     pub entry_count: u64,
     pub location: SegmentLocation,
+    /// Epoch milliseconds when this segment was created.
+    pub created_at: i64,
 }
 
 impl SegmentMeta {
@@ -54,6 +58,7 @@ impl SegmentMeta {
                     )),
                 },
             }),
+            created_at: self.created_at,
         };
         proto.encode_to_vec()
     }
@@ -74,6 +79,7 @@ impl SegmentMeta {
             size: proto.size,
             entry_count: proto.entry_count,
             location,
+            created_at: proto.created_at,
         })
     }
 }
@@ -121,6 +127,13 @@ fn segment_filename(level: u32, id: u64) -> String {
 }
 
 const DEFAULT_REMOTE_CACHE_SIZE: usize = 64;
+
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+}
 
 impl SegmentManager {
     pub fn recover(
@@ -171,6 +184,7 @@ impl SegmentManager {
                     location: SegmentLocation::Local {
                         path: seg_path.to_string_lossy().to_string(),
                     },
+                    created_at: now_millis(),
                 };
                 index.put_segment_meta_raw(id, &meta.encode())?;
 
@@ -234,6 +248,7 @@ impl SegmentManager {
             location: SegmentLocation::Local {
                 path: path.to_string_lossy().to_string(),
             },
+            created_at: now_millis(),
         };
         self.index.put_segment_meta_raw(id, &meta.encode())?;
 
@@ -462,6 +477,7 @@ mod tests {
             size: 1024,
             entry_count: 10,
             location: SegmentLocation::Local { path: "/tmp/segments/L2_000042.cseg".into() },
+            created_at: 1000,
         };
         let encoded = local.encode();
         let decoded = SegmentMeta::decode(&encoded).unwrap();
@@ -476,6 +492,7 @@ mod tests {
             size: 2048,
             entry_count: 20,
             location: SegmentLocation::Remote { key: "chronicle/segments/L3_000007.cseg".into() },
+            created_at: 2000,
         };
         let encoded = remote.encode();
         let decoded = SegmentMeta::decode(&encoded).unwrap();
@@ -743,6 +760,7 @@ mod tests {
             size: 4096,
             entry_count: 50,
             location: SegmentLocation::Local { path: "/tmp/L2_000001.cseg".into() },
+            created_at: 3000,
         };
         index.put_segment_meta_raw(1, &meta.encode()).unwrap();
 
@@ -752,6 +770,7 @@ mod tests {
             size: 8192,
             entry_count: 100,
             location: SegmentLocation::Remote { key: "s3/key".into() },
+            created_at: 4000,
         };
         index.put_segment_meta_raw(2, &remote_meta.encode()).unwrap();
 

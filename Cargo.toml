@@ -6,7 +6,6 @@ members = [
     "chronicles/libchronicle",
     "catalog",
     "chronicles/cli",
-    "examples",
 ]
 
 [workspace.dependencies]

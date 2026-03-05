@@ -19,6 +19,7 @@ pub trait Catalog: Send + Sync {
         expected_version: i64,
     ) -> Result<TimelineCatalog, CatalogError>;
     async fn create_timeline(&self, name: &str) -> Result<TimelineCatalog, CatalogError>;
+    async fn delete_timeline(&self, name: &str) -> Result<(), CatalogError>;
     async fn list_timelines(&self) -> Result<Vec<TimelineCatalog>, CatalogError>;
 
     // Unit operations

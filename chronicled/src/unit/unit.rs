@@ -9,6 +9,7 @@ use crate::storage::blob::compaction::CompactionPipeline;
 use crate::storage::blob::manager::SegmentManager;
 use crate::storage::level_iterator::LevelIterator;
 use crate::storage::index::{Storage, StorageOptions};
+use crate::storage::retention::RetentionManager;
 use crate::storage::write_cache::WriteCache;
 use crate::unit::timeline_state::TimelineStateManager;
 use crate::unit::unit_service::UnitService;
@@ -43,6 +44,7 @@ pub struct Unit {
     external_handle: JoinHandle<()>,
     health_handle: JoinHandle<()>,
     compaction_pipeline: CompactionPipeline,
+    retention_manager: Option<RetentionManager>,
     wal: Wal,
     catalog: Arc<dyn Catalog>,
     address: String,
@@ -167,9 +169,23 @@ impl Unit {
             "compaction pipeline started"
         );
 
+        // Spawn retention manager if TTL is configured.
+        let retention_manager = options.retention.ttl_hours.map(|ttl_hours| {
+            let ttl_ms = ttl_hours as i64 * 3600 * 1000;
+            let interval = Duration::from_secs(options.retention.interval_secs);
+            info!(ttl_hours, interval_secs = options.retention.interval_secs, "retention manager started");
+            RetentionManager::spawn(
+                segment_manager.clone(),
+                storage.clone(),
+                context.clone(),
+                ttl_ms,
+                interval,
+            )
+        });
+
         let unit_state = Arc::new(AtomicU8::new(STATE_WRITABLE));
 
-        let unit_service = UnitService::new(write_group, read_group, timeline_state.clone());
+        let unit_service = UnitService::new(write_group, read_group, timeline_state.clone(), unit_state.clone());
 
         let admin_service = AdminService {
             wal: wal.clone(),
@@ -178,7 +194,11 @@ impl Unit {
             state: unit_state.clone(),
         };
 
-        let address = format!("http://{}", options.server.bind_address);
+        let address = options
+            .server
+            .advertise_address
+            .clone()
+            .unwrap_or_else(|| format!("http://{}", options.server.bind_address));
 
         let external_handle = bg_start_external_service(
             options.server.clone(),
@@ -212,6 +232,7 @@ impl Unit {
             external_handle,
             health_handle,
             compaction_pipeline,
+            retention_manager,
             wal,
             catalog,
             address,
@@ -234,6 +255,9 @@ impl Unit {
         self.context.cancel();
 
         self.compaction_pipeline.shutdown().await;
+        if let Some(retention) = self.retention_manager {
+            retention.shutdown().await;
+        }
         if let Err(err) = self.health_handle.await {
             error!(error = ?err, "unexpected error closing health monitor");
         }

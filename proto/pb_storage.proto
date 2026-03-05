@@ -20,6 +20,7 @@ message SegmentMeta {
   uint64 size = 3;
   uint64 entry_count = 4;
   SegmentLocation location = 5;
+  int64 created_at = 6;
 }
 
 message SegmentLocation {

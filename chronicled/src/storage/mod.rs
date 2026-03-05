@@ -3,6 +3,7 @@ use chronicle_proto::pb_ext::Event;
 pub mod blob;
 pub mod index;
 pub mod level_iterator;
+pub mod retention;
 pub mod write_cache;
 
 pub trait TimelineReader {

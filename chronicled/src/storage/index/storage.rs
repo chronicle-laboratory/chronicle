@@ -120,6 +120,21 @@ impl Storage {
             .map_err(|e| UnitError::Storage(e.to_string()))
     }
 
+    pub fn delete_index_batch(
+        &self,
+        keys: &[(i64, i64)],
+    ) -> Result<(), UnitError> {
+        let mut batch = WriteBatch::default();
+        for &(timeline_id, offset) in keys {
+            let key = encode_key(timeline_id, offset);
+            batch.delete(key);
+        }
+        self.inner
+            .database
+            .write_opt(batch, &self.inner.write_options)
+            .map_err(|e| UnitError::Storage(e.to_string()))
+    }
+
     pub fn delete_index_range(
         &self,
         timeline_id: i64,

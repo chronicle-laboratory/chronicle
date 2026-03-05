@@ -6,11 +6,11 @@ use crate::{Offset, Writer};
 use catalog::Catalog;
 use chronicle_proto::pb_catalog::{Segment, TimelineStatus};
 use chronicle_proto::pb_ext::{
-    Event, RecordEventsRequest, RecordEventsRequestItem, RecordEventsResponse, StatusCode,
+    Event, RecordEventsRequest, RecordEventsRequestItem, StatusCode,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -173,8 +173,8 @@ impl Timeline {
             senders: HashMap::new(),
         }));
 
-        let mut senders = HashMap::new();
         let mut tasks = Vec::new();
+        let mut senders = HashMap::new();
 
         for endpoint in &writable_segment.ensemble {
             let client = unit_clients.get(endpoint).ok_or_else(|| {
@@ -186,12 +186,13 @@ impl Timeline {
 
             let inner_clone = inner.clone();
             let ep = endpoint.clone();
+            let client_clone = client.clone();
             tasks.push(tokio::spawn(async move {
-                ack_collector(inner_clone, ep, response_stream).await;
+                ack_collector(inner_clone, ep, client_clone, response_stream).await;
             }));
         }
 
-        // Store senders inside InnerState so record() can access them.
+        // Store senders so record() can use them immediately.
         {
             let mut state = inner.lock().unwrap();
             state.senders = senders;
@@ -223,39 +224,73 @@ impl Timeline {
         let available: Vec<String> = unit_clients.keys().cloned().collect();
         let exclude: Vec<String> = failed_units.to_vec();
 
-        let new_ensemble =
-            select_ensemble(&available, &[], &exclude, 0 /* filled below */).ok_or_else(|| {
+        let (new_seg, catalog_version, name) = {
+            let mut state = self.inner.lock().unwrap();
+            let rf = state.replication_factor;
+
+            let real_ensemble = select_ensemble(&available, &[], &exclude, rf).ok_or_else(|| {
                 ChronicleError::EnsembleUnavailable("cannot find replacement ensemble".into())
             })?;
 
-        let mut state = self.inner.lock().unwrap();
-        let rf = state.replication_factor;
+            let new_seg = Segment {
+                id: state.segments.last().map_or(1, |s| s.id + 1),
+                ensemble: real_ensemble,
+                start_offset: state.lra + 1,
+            };
 
-        let real_ensemble = select_ensemble(&available, &[], &exclude, rf).ok_or_else(|| {
-            ChronicleError::EnsembleUnavailable("cannot find replacement ensemble".into())
-        })?;
+            state.segments.push(new_seg.clone());
+            state.writable_segment = Some(new_seg.clone());
 
-        let new_seg = Segment {
-            id: state.segments.last().map_or(1, |s| s.id + 1),
-            ensemble: real_ensemble.clone(),
-            start_offset: state.lra + 1,
+            // Remove acks from failed units for offsets not yet committed.
+            for (_offset, acked_set) in state.acked.iter_mut() {
+                for fu in failed_units {
+                    acked_set.remove(fu);
+                }
+            }
+
+            // Remove senders for failed units.
+            for fu in failed_units {
+                state.senders.remove(fu);
+            }
+
+            (new_seg, state.catalog_version, state.name.clone())
         };
 
-        state.segments.push(new_seg.clone());
-        state.writable_segment = Some(new_seg);
+        // CAS-update the catalog with the new segment.
+        let tc = catalog.get_timeline(&name).await?;
+        let mut updated = tc.clone();
+        updated.segments.push(new_seg.clone());
+        catalog.put_timeline(&updated, catalog_version).await?;
 
-        // Remove acks from failed units for offsets not yet committed.
-        for (_offset, acked_set) in state.acked.iter_mut() {
-            for fu in failed_units {
-                acked_set.remove(fu);
+        // Spawn ack_collector tasks for new ensemble members that weren't
+        // already connected (the reconnect loop handles existing ones).
+        for endpoint in &new_seg.ensemble {
+            let has_sender = {
+                let state = self.inner.lock().unwrap();
+                state.senders.contains_key(endpoint)
+            };
+            if !has_sender {
+                if let Some(client) = unit_clients.get(endpoint) {
+                    let (tx, response_stream) = client.open_record_stream(64).await?;
+                    {
+                        let mut state = self.inner.lock().unwrap();
+                        state.senders.insert(endpoint.clone(), tx);
+                    }
+                    let inner_clone = self.inner.clone();
+                    let ep = endpoint.clone();
+                    let client_clone = client.clone();
+                    tokio::spawn(async move {
+                        ack_collector(inner_clone, ep, client_clone, response_stream).await;
+                    });
+                }
             }
         }
 
-        drop(state);
-
-        // Re-open streams for new ensemble members would go here.
-        // For now we update catalog only; full stream migration is a follow-up.
-        let _ = (catalog, new_ensemble);
+        info!(
+            ensemble = ?new_seg.ensemble,
+            segment_id = new_seg.id,
+            "ensemble change completed"
+        );
 
         Ok(())
     }
@@ -267,7 +302,7 @@ impl Timeline {
 impl Writer for Timeline {
     /// Assign the next offset, fire the event to ALL units in the writable
     /// segment, and return immediately. Acks are collected asynchronously.
-    async fn record(&self, event: Vec<u8>) -> Result<Offset, ChronicleError> {
+    async fn record(&self, schema_id: i64, event: Vec<u8>) -> Result<Offset, ChronicleError> {
         let (offset, request, senders) = {
             let mut state = self.inner.lock().unwrap();
 
@@ -294,7 +329,7 @@ impl Writer for Timeline {
                 payload: Some(event.into()),
                 crc32: None,
                 timestamp: now,
-                schema_id: 0,
+                schema_id,
             };
 
             let item = RecordEventsRequestItem {
@@ -333,49 +368,90 @@ impl Writer for Timeline {
 
 /// Reads responses from a single unit's Record stream and updates the shared
 /// acked state. Advances LRA when all units have acked contiguously.
+///
+/// If the stream breaks, attempts to reconnect and re-open.
 async fn ack_collector(
     inner: Arc<Mutex<InnerState>>,
     endpoint: String,
-    mut response_stream: tonic::Streaming<RecordEventsResponse>,
+    client: UnitClient,
+    initial_stream: tonic::Streaming<chronicle_proto::pb_ext::RecordEventsResponse>,
 ) {
-    while let Ok(Some(response)) = response_stream.message().await {
-        let mut state = inner.lock().unwrap();
+    let mut client = client;
+    let mut backoff = Duration::from_millis(100);
+    const MAX_BACKOFF: Duration = Duration::from_secs(10);
+    let mut response_stream = initial_stream;
 
-        for item in &response.items {
-            if item.code == StatusCode::Ok as i32 {
-                if let Some(ref event) = item.event {
-                    state
-                        .acked
-                        .entry(event.offset)
-                        .or_default()
-                        .insert(endpoint.clone());
+    loop {
+        // Process responses until the stream ends.
+        while let Ok(Some(response)) = response_stream.message().await {
+            let mut state = inner.lock().unwrap();
+
+            for item in &response.items {
+                if item.code == StatusCode::Ok as i32 {
+                    if let Some(ref event) = item.event {
+                        state
+                            .acked
+                            .entry(event.offset)
+                            .or_default()
+                            .insert(endpoint.clone());
+                    }
+                } else {
+                    warn!(
+                        endpoint = %endpoint,
+                        code = item.code,
+                        "record response error from unit"
+                    );
                 }
-            } else {
-                warn!(
-                    endpoint = %endpoint,
-                    code = item.code,
-                    "record response error from unit"
-                );
             }
+
+            // Advance LRA: scan contiguous fully-acked offsets (TLA+ FindMaxContinuousAck).
+            let rf = state.replication_factor;
+            while state.lra < state.lrs {
+                let next = state.lra + 1;
+                let fully_acked = state
+                    .acked
+                    .get(&next)
+                    .is_some_and(|set| set.len() >= rf);
+                if fully_acked {
+                    state.lra = next;
+                } else {
+                    break;
+                }
+            }
+
+            // Prune acked entries for committed offsets.
+            let lra = state.lra;
+            state.acked.retain(|&offset, _| offset > lra);
         }
 
-        // Advance LRA: scan contiguous fully-acked offsets (TLA+ FindMaxContinuousAck).
-        let rf = state.replication_factor;
-        while state.lra < state.lrs {
-            let next = state.lra + 1;
-            let fully_acked = state
-                .acked
-                .get(&next)
-                .is_some_and(|set| set.len() >= rf);
-            if fully_acked {
-                state.lra = next;
-            } else {
-                break;
+        // Stream ended — remove dead sender and try to reconnect.
+        {
+            let mut state = inner.lock().unwrap();
+            state.senders.remove(&endpoint);
+        }
+        warn!(endpoint = %endpoint, "record stream ended, reconnecting");
+
+        loop {
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(MAX_BACKOFF);
+            if let Err(re) = client.reconnect().await {
+                warn!(endpoint = %endpoint, error = %re, "reconnect failed");
+                continue;
+            }
+            match client.open_record_stream(64).await {
+                Ok((tx, stream)) => {
+                    backoff = Duration::from_millis(100);
+                    {
+                        let mut state = inner.lock().unwrap();
+                        state.senders.insert(endpoint.clone(), tx);
+                    }
+                    response_stream = stream;
+                    break;
+                }
+                Err(e) => {
+                    warn!(endpoint = %endpoint, error = %e, "failed to reopen record stream");
+                }
             }
         }
-
-        // Prune acked entries for committed offsets.
-        let lra = state.lra;
-        state.acked.retain(|&offset, _| offset > lra);
     }
 }

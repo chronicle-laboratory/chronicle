@@ -49,12 +49,17 @@ impl Default for WalOptions {
 pub struct ServerOptions {
     #[serde(default = "default_server_address")]
     pub bind_address: SocketAddr,
+    /// Address to register in the catalog for other nodes to connect to.
+    /// Defaults to bind_address. Set this in Kubernetes to the pod's DNS name.
+    #[serde(default)]
+    pub advertise_address: Option<String>,
 }
 
 impl Default for ServerOptions {
     fn default() -> Self {
         Self {
             bind_address: default_server_address(),
+            advertise_address: None,
         }
     }
 }
@@ -228,6 +233,31 @@ impl SegmentOptions {
     }
 }
 
+/// Retention policy for automatic data eviction.
+#[derive(Debug, Deserialize, Clone)]
+pub struct RetentionOptions {
+    /// Maximum age of events in hours. Events older than this are eligible for deletion.
+    /// None = no TTL-based retention (keep forever).
+    #[serde(default)]
+    pub ttl_hours: Option<u64>,
+    /// How often the retention manager runs, in seconds.
+    #[serde(default = "default_retention_interval_secs")]
+    pub interval_secs: u64,
+}
+
+impl Default for RetentionOptions {
+    fn default() -> Self {
+        Self {
+            ttl_hours: None,
+            interval_secs: default_retention_interval_secs(),
+        }
+    }
+}
+
+fn default_retention_interval_secs() -> u64 {
+    3600 // 1 hour
+}
+
 #[derive(Debug, Deserialize)]
 pub struct UnitOptions {
     #[serde(default)]
@@ -248,6 +278,8 @@ pub struct UnitOptions {
     pub io_mode: IoMode,
     #[serde(default)]
     pub index: IndexOptions,
+    #[serde(default)]
+    pub retention: RetentionOptions,
 }
 
 impl Default for UnitOptions {
@@ -262,6 +294,7 @@ impl Default for UnitOptions {
             segments: SegmentOptions::default(),
             io_mode: IoMode::default(),
             index: IndexOptions::default(),
+            retention: RetentionOptions::default(),
         }
     }
 }

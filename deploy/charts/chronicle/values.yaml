@@ -1,0 +1,27 @@
+replicaCount: 3
+
+image:
+  repository: chronicle-unit
+  tag: dev
+  pullPolicy: IfNotPresent
+
+server:
+  bindAddress: "0.0.0.0:7070"
+
+catalog:
+  backend: oxia
+  serviceAddress: "oxia:6648"
+
+log:
+  level: info
+
+storage:
+  size: 2Gi
+
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "250m"
+  limits:
+    memory: "1Gi"
+    cpu: "1"
