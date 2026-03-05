@@ -15,26 +15,20 @@ use super::remote::RemoteStore;
 use crate::storage::index::{IndexEntry, Storage};
 use crate::storage::write_cache::WriteCache;
 
-/// Leveled compaction pipeline:
+/// Leveled compaction pipeline with per-level tasks:
 ///   L0 = write cache (in-memory, not managed here)
 ///   L1 = sealed write cache flush → blob segment
 ///   L2 = merge N L1 segments → fewer, larger, timeline-sorted segments
 ///   L3 = split L2 by timeline → one segment per timeline
 ///   L4 = remote (S3 offload of L3 segments)
-pub struct CompactionTask {
-    write_cache: WriteCache,
-    segment_manager: Arc<SegmentManager>,
-    index: Storage,
-    context: CancellationToken,
-    interval: Duration,
-    flush_notify: Arc<Notify>,
-    l1_compaction_trigger: usize,
-    l2_compaction_trigger: usize,
-    remote_store: Option<Arc<dyn RemoteStore>>,
+///
+/// Each level runs on its own tokio task and notifies the next level on completion.
+pub struct CompactionPipeline {
+    handles: Vec<JoinHandle<()>>,
 }
 
-impl CompactionTask {
-    pub fn new(
+impl CompactionPipeline {
+    pub fn spawn(
         write_cache: WriteCache,
         segment_manager: Arc<SegmentManager>,
         index: Storage,
@@ -45,64 +39,132 @@ impl CompactionTask {
         remote_store: Option<Arc<dyn RemoteStore>>,
     ) -> Self {
         let flush_notify = write_cache.flush_notify();
-        Self {
-            write_cache,
-            segment_manager,
-            index,
-            context,
-            interval,
-            flush_notify,
-            l1_compaction_trigger,
-            l2_compaction_trigger,
-            remote_store,
+
+        // Notify signals: each level notifies the next when it produces output
+        let l2_notify = Arc::new(Notify::new());
+        let l3_notify = Arc::new(Notify::new());
+        let l4_notify = Arc::new(Notify::new());
+
+        let l1_handle = {
+            let segment_manager = segment_manager.clone();
+            let index = index.clone();
+            let context = context.clone();
+            let l2_notify = l2_notify.clone();
+            tokio::spawn(async move {
+                let task = L1FlushTask {
+                    write_cache,
+                    segment_manager,
+                    index,
+                    flush_notify,
+                    l2_notify,
+                };
+                task.run(context, interval).await;
+            })
+        };
+
+        let l2_handle = {
+            let segment_manager = segment_manager.clone();
+            let index = index.clone();
+            let context = context.clone();
+            let l3_notify = l3_notify.clone();
+            tokio::spawn(async move {
+                let task = L2MergeTask {
+                    segment_manager,
+                    index,
+                    l2_notify,
+                    l3_notify,
+                    trigger: l1_compaction_trigger,
+                };
+                task.run(context).await;
+            })
+        };
+
+        let l3_handle = {
+            let segment_manager = segment_manager.clone();
+            let index = index.clone();
+            let context = context.clone();
+            let l4_notify = l4_notify.clone();
+            tokio::spawn(async move {
+                let task = L3SplitTask {
+                    segment_manager,
+                    index,
+                    l3_notify,
+                    l4_notify,
+                    trigger: l2_compaction_trigger,
+                };
+                task.run(context).await;
+            })
+        };
+
+        let l4_handle = if let Some(remote_store) = remote_store {
+            let segment_manager = segment_manager.clone();
+            let context = context.clone();
+            Some(tokio::spawn(async move {
+                let task = L4OffloadTask {
+                    segment_manager,
+                    remote_store,
+                    l4_notify,
+                };
+                task.run(context).await;
+            }))
+        } else {
+            None
+        };
+
+        let mut handles = vec![l1_handle, l2_handle, l3_handle];
+        if let Some(h) = l4_handle {
+            handles.push(h);
         }
+
+        Self { handles }
     }
 
-    pub fn spawn(self) -> JoinHandle<()> {
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(self.interval);
-            loop {
-                tokio::select! {
-                    _ = self.context.cancelled() => {
-                        if let Err(e) = self.compact().await {
-                            warn!(error = ?e, "final compaction failed");
-                        }
-                        info!("compaction task stopped");
-                        break;
+    pub async fn shutdown(self) {
+        for handle in self.handles {
+            if let Err(err) = handle.await {
+                warn!(error = ?err, "compaction task join error");
+            }
+        }
+    }
+}
+
+// ─── L1: Flush sealed write cache → blob segment ───
+
+struct L1FlushTask {
+    write_cache: WriteCache,
+    segment_manager: Arc<SegmentManager>,
+    index: Storage,
+    flush_notify: Arc<Notify>,
+    l2_notify: Arc<Notify>,
+}
+
+impl L1FlushTask {
+    async fn run(&self, context: CancellationToken, interval: Duration) {
+        let mut ticker = tokio::time::interval(interval);
+        loop {
+            tokio::select! {
+                _ = context.cancelled() => {
+                    if let Err(e) = self.flush().await {
+                        warn!(error = ?e, "final L1 flush failed");
                     }
-                    _ = interval.tick() => {
-                        if let Err(e) = self.compact().await {
-                            warn!(error = ?e, "compaction failed");
-                        }
+                    info!("L1 flush task stopped");
+                    break;
+                }
+                _ = ticker.tick() => {
+                    if let Err(e) = self.flush().await {
+                        warn!(error = ?e, "L1 flush failed");
                     }
-                    _ = self.flush_notify.notified() => {
-                        if let Err(e) = self.compact().await {
-                            warn!(error = ?e, "flush-triggered compaction failed");
-                        }
+                }
+                _ = self.flush_notify.notified() => {
+                    if let Err(e) = self.flush().await {
+                        warn!(error = ?e, "L1 flush failed");
                     }
                 }
             }
-        })
+        }
     }
 
-    async fn compact(&self) -> Result<(), UnitError> {
-        // L0 → L1: flush sealed write cache to blob segment
-        self.flush_to_l1().await?;
-
-        // L1 → L2: merge N L1 segments into timeline-sorted segment
-        self.merge_l1_to_l2().await?;
-
-        // L2 → L3: split by timeline
-        self.split_l2_to_l3().await?;
-
-        // L3 → L4: offload to remote
-        self.offload_l3_to_remote().await?;
-
-        Ok(())
-    }
-
-    /// L0 → L1: Flush sealed write cache to a new L1 blob segment.
-    async fn flush_to_l1(&self) -> Result<(), UnitError> {
+    async fn flush(&self) -> Result<(), UnitError> {
         let sealed = match self.write_cache.sealed_data() {
             Some(s) => s,
             None => return Ok(()),
@@ -144,20 +206,47 @@ impl CompactionTask {
         self.index.put_index_batch(&index_entries)?;
         self.write_cache.clear_sealed();
 
-        info!(
-            segment_id = segment_id,
-            entries = entries_count,
-            "L1 flush complete"
-        );
+        info!(segment_id = segment_id, entries = entries_count, "L1 flush complete");
+
+        // Notify L2 that new L1 segments are available
+        self.l2_notify.notify_one();
 
         Ok(())
     }
+}
 
-    /// L1 → L2: Merge N L1 segments into fewer, larger L2 segments,
-    /// sorted by (timeline_id, offset) for best-effort timeline grouping.
-    async fn merge_l1_to_l2(&self) -> Result<(), UnitError> {
+// ─── L2: Merge N L1 segments → timeline-sorted segment ───
+
+struct L2MergeTask {
+    segment_manager: Arc<SegmentManager>,
+    index: Storage,
+    l2_notify: Arc<Notify>,
+    l3_notify: Arc<Notify>,
+    trigger: usize,
+}
+
+impl L2MergeTask {
+    async fn run(&self, context: CancellationToken) {
+        loop {
+            tokio::select! {
+                _ = context.cancelled() => {
+                    // Final merge attempt
+                    let _ = self.merge().await;
+                    info!("L2 merge task stopped");
+                    break;
+                }
+                _ = self.l2_notify.notified() => {
+                    if let Err(e) = self.merge().await {
+                        warn!(error = ?e, "L2 merge failed");
+                    }
+                }
+            }
+        }
+    }
+
+    async fn merge(&self) -> Result<(), UnitError> {
         let l1_segments = self.segment_manager.segments_at_level(1);
-        if l1_segments.len() < self.l1_compaction_trigger {
+        if l1_segments.len() < self.trigger {
             return Ok(());
         }
 
@@ -170,7 +259,6 @@ impl CompactionTask {
             return Ok(());
         }
 
-        // Sort by (timeline_id, offset) for best-effort timeline grouping
         let mut sorted = entries;
         sorted.sort_by_key(|&((tid, off), _)| (tid, off));
 
@@ -196,7 +284,6 @@ impl CompactionTask {
         writer.finish().await?;
         self.segment_manager.update_meta(new_segment_id, size, entry_count);
 
-        // Atomic index update, then remove old L1 segments
         self.index.put_index_batch(&new_index_entries)?;
         let ids: Vec<u64> = source_ids.into_iter().collect();
         self.segment_manager.remove_segments(&ids);
@@ -208,13 +295,44 @@ impl CompactionTask {
             "L1 → L2 merge complete"
         );
 
+        // Notify L3 that new L2 segments are available
+        self.l3_notify.notify_one();
+
         Ok(())
     }
+}
 
-    /// L2 → L3: Split L2 segments by timeline — one L3 segment per timeline.
-    async fn split_l2_to_l3(&self) -> Result<(), UnitError> {
+// ─── L3: Split L2 segments by timeline ───
+
+struct L3SplitTask {
+    segment_manager: Arc<SegmentManager>,
+    index: Storage,
+    l3_notify: Arc<Notify>,
+    l4_notify: Arc<Notify>,
+    trigger: usize,
+}
+
+impl L3SplitTask {
+    async fn run(&self, context: CancellationToken) {
+        loop {
+            tokio::select! {
+                _ = context.cancelled() => {
+                    let _ = self.split().await;
+                    info!("L3 split task stopped");
+                    break;
+                }
+                _ = self.l3_notify.notified() => {
+                    if let Err(e) = self.split().await {
+                        warn!(error = ?e, "L3 split failed");
+                    }
+                }
+            }
+        }
+    }
+
+    async fn split(&self) -> Result<(), UnitError> {
         let l2_segments = self.segment_manager.segments_at_level(2);
-        if l2_segments.len() < self.l2_compaction_trigger {
+        if l2_segments.len() < self.trigger {
             return Ok(());
         }
 
@@ -227,7 +345,6 @@ impl CompactionTask {
             return Ok(());
         }
 
-        // Group entries by timeline_id
         let mut by_timeline: HashMap<i64, Vec<((i64, i64), IndexEntry)>> = HashMap::new();
         for entry in entries {
             by_timeline.entry(entry.0.0).or_default().push(entry);
@@ -267,26 +384,46 @@ impl CompactionTask {
             );
         }
 
-        // Atomic index update, then remove old L2 segments
         self.index.put_index_batch(&all_new_entries)?;
         let ids: Vec<u64> = source_ids.into_iter().collect();
         self.segment_manager.remove_segments(&ids);
 
-        info!(
-            source_count = l2_segments.len(),
-            "L2 → L3 split complete"
-        );
+        info!(source_count = l2_segments.len(), "L2 → L3 split complete");
+
+        // Notify L4 that new L3 segments are available
+        self.l4_notify.notify_one();
 
         Ok(())
     }
+}
 
-    /// L3 → L4: Offload per-timeline L3 segments to remote storage (S3).
-    async fn offload_l3_to_remote(&self) -> Result<(), UnitError> {
-        let remote_store = match &self.remote_store {
-            Some(o) => o.clone(),
-            None => return Ok(()),
-        };
+// ─── L4: Offload L3 segments to remote storage ───
 
+struct L4OffloadTask {
+    segment_manager: Arc<SegmentManager>,
+    remote_store: Arc<dyn RemoteStore>,
+    l4_notify: Arc<Notify>,
+}
+
+impl L4OffloadTask {
+    async fn run(&self, context: CancellationToken) {
+        loop {
+            tokio::select! {
+                _ = context.cancelled() => {
+                    let _ = self.offload().await;
+                    info!("L4 offload task stopped");
+                    break;
+                }
+                _ = self.l4_notify.notified() => {
+                    if let Err(e) = self.offload().await {
+                        warn!(error = ?e, "L4 offload failed");
+                    }
+                }
+            }
+        }
+    }
+
+    async fn offload(&self) -> Result<(), UnitError> {
         let l3_segments = self.segment_manager.segments_at_level(3);
         if l3_segments.is_empty() {
             return Ok(());
@@ -308,11 +445,7 @@ impl CompactionTask {
 
             let key = format!("chronicle/segments/{}", filename);
 
-            // Upload to S3
-            remote_store.upload(&local_path, &key).await?;
-
-            // Mark as remote — deletes local file, keeps meta with Remote location.
-            // Index entries remain valid — reads fall back to S3 via LRU cache.
+            self.remote_store.upload(&local_path, &key).await?;
             self.segment_manager.mark_remote(meta.id, key.clone());
 
             info!(
@@ -332,11 +465,21 @@ mod tests {
     use crate::option::unit_options::IoMode;
     use crate::storage::index::StorageOptions;
 
+    // Helper to create individual level tasks for direct testing
+    struct TestHarness {
+        write_cache: WriteCache,
+        segment_manager: Arc<SegmentManager>,
+        index: Storage,
+        l1: L1FlushTask,
+        l2: L2MergeTask,
+        l3: L3SplitTask,
+    }
+
     fn setup_test(
         dir: &std::path::Path,
         l1_trigger: usize,
         l2_trigger: usize,
-    ) -> (WriteCache, Arc<SegmentManager>, Storage, CompactionTask) {
+    ) -> TestHarness {
         let segments_dir = dir.join("segments");
         let index_dir = dir.join("index");
 
@@ -349,25 +492,49 @@ mod tests {
         })
         .unwrap();
 
-        let context = CancellationToken::new();
-        let task = CompactionTask::new(
-            write_cache.clone(),
-            segment_manager.clone(),
-            index.clone(),
-            context,
-            Duration::from_secs(3600),
-            l1_trigger,
-            l2_trigger,
-            None,
-        );
+        let flush_notify = write_cache.flush_notify();
+        let l2_notify = Arc::new(Notify::new());
+        let l3_notify = Arc::new(Notify::new());
+        let l4_notify = Arc::new(Notify::new());
 
-        (write_cache, segment_manager, index, task)
+        let l1 = L1FlushTask {
+            write_cache: write_cache.clone(),
+            segment_manager: segment_manager.clone(),
+            index: index.clone(),
+            flush_notify,
+            l2_notify: l2_notify.clone(),
+        };
+
+        let l2 = L2MergeTask {
+            segment_manager: segment_manager.clone(),
+            index: index.clone(),
+            l2_notify,
+            l3_notify: l3_notify.clone(),
+            trigger: l1_trigger,
+        };
+
+        let l3 = L3SplitTask {
+            segment_manager: segment_manager.clone(),
+            index: index.clone(),
+            l3_notify,
+            l4_notify,
+            trigger: l2_trigger,
+        };
+
+        TestHarness {
+            write_cache,
+            segment_manager,
+            index,
+            l1,
+            l2,
+            l3,
+        }
     }
 
     #[tokio::test]
     async fn test_flush_to_l1() {
         let dir = tempfile::tempdir().unwrap();
-        let (write_cache, segment_manager, index, task) = setup_test(dir.path(), 4, 4);
+        let h = setup_test(dir.path(), 4, 4);
 
         for i in 0..5 {
             let event = Event {
@@ -378,23 +545,22 @@ mod tests {
                 crc32: None,
                 timestamp: i * 100,
             };
-            write_cache.put_direct(event, true);
+            h.write_cache.put_direct(event, true);
         }
 
-        write_cache.try_seal();
-        task.flush_to_l1().await.unwrap();
+        h.write_cache.try_seal();
+        h.l1.flush().await.unwrap();
 
-        assert_eq!(segment_manager.segments_at_level(1).len(), 1);
-        let entries = index.scan_index(1, 0, 10);
+        assert_eq!(h.segment_manager.segments_at_level(1).len(), 1);
+        let entries = h.index.scan_index(1, 0, 10);
         assert_eq!(entries.len(), 5);
     }
 
     #[tokio::test]
     async fn test_l1_to_l2_merge() {
         let dir = tempfile::tempdir().unwrap();
-        let (write_cache, segment_manager, index, task) = setup_test(dir.path(), 4, 100);
+        let h = setup_test(dir.path(), 4, 100);
 
-        // Create 4 L1 segments (trigger threshold)
         for batch in 0..4 {
             for i in 0..3 {
                 let offset = batch * 3 + i;
@@ -406,24 +572,24 @@ mod tests {
                     crc32: None,
                     timestamp: offset * 100,
                 };
-                write_cache.put_direct(event, true);
+                h.write_cache.put_direct(event, true);
             }
-            write_cache.try_seal();
-            task.flush_to_l1().await.unwrap();
+            h.write_cache.try_seal();
+            h.l1.flush().await.unwrap();
         }
 
-        assert_eq!(segment_manager.segments_at_level(1).len(), 4);
+        assert_eq!(h.segment_manager.segments_at_level(1).len(), 4);
 
-        task.merge_l1_to_l2().await.unwrap();
+        h.l2.merge().await.unwrap();
 
-        assert_eq!(segment_manager.segments_at_level(1).len(), 0);
-        assert_eq!(segment_manager.segments_at_level(2).len(), 1);
+        assert_eq!(h.segment_manager.segments_at_level(1).len(), 0);
+        assert_eq!(h.segment_manager.segments_at_level(2).len(), 1);
 
-        let entries = index.scan_index(1, 0, 100);
+        let entries = h.index.scan_index(1, 0, 100);
         assert_eq!(entries.len(), 12);
 
         for (offset, entry) in &entries {
-            let event = segment_manager.read_event(entry).unwrap();
+            let event = h.segment_manager.read_event(entry).unwrap();
             assert_eq!(event.offset, *offset);
             assert_eq!(event.timeline_id, 1);
         }
@@ -432,9 +598,8 @@ mod tests {
     #[tokio::test]
     async fn test_l2_to_l3_split() {
         let dir = tempfile::tempdir().unwrap();
-        let (write_cache, segment_manager, index, task) = setup_test(dir.path(), 2, 2);
+        let h = setup_test(dir.path(), 2, 2);
 
-        // Create events for 3 timelines across batches
         for batch in 0..2 {
             for timeline in 1..=3i64 {
                 for i in 0..2 {
@@ -447,18 +612,16 @@ mod tests {
                         crc32: None,
                         timestamp: offset * 100,
                     };
-                    write_cache.put_direct(event, true);
+                    h.write_cache.put_direct(event, true);
                 }
             }
-            write_cache.try_seal();
-            task.flush_to_l1().await.unwrap();
+            h.write_cache.try_seal();
+            h.l1.flush().await.unwrap();
         }
 
-        // L1 → L2
-        task.merge_l1_to_l2().await.unwrap();
-        assert!(segment_manager.segments_at_level(1).is_empty());
+        h.l2.merge().await.unwrap();
+        assert!(h.segment_manager.segments_at_level(1).is_empty());
 
-        // Create more to get ≥ 2 L2 segments
         for batch in 0..2 {
             for timeline in 1..=3i64 {
                 let offset = 10 + batch;
@@ -470,27 +633,26 @@ mod tests {
                     crc32: None,
                     timestamp: offset * 100,
                 };
-                write_cache.put_direct(event, true);
+                h.write_cache.put_direct(event, true);
             }
-            write_cache.try_seal();
-            task.flush_to_l1().await.unwrap();
+            h.write_cache.try_seal();
+            h.l1.flush().await.unwrap();
         }
-        task.merge_l1_to_l2().await.unwrap();
+        h.l2.merge().await.unwrap();
 
-        let l2_count = segment_manager.segments_at_level(2).len();
+        let l2_count = h.segment_manager.segments_at_level(2).len();
         assert!(l2_count >= 2, "expected >= 2 L2 segments, got {}", l2_count);
 
-        // L2 → L3
-        task.split_l2_to_l3().await.unwrap();
+        h.l3.split().await.unwrap();
 
-        assert_eq!(segment_manager.segments_at_level(2).len(), 0);
-        assert_eq!(segment_manager.segments_at_level(3).len(), 3);
+        assert_eq!(h.segment_manager.segments_at_level(2).len(), 0);
+        assert_eq!(h.segment_manager.segments_at_level(3).len(), 3);
 
         for timeline in 1..=3i64 {
-            let entries = index.scan_index(timeline, 0, 100);
+            let entries = h.index.scan_index(timeline, 0, 100);
             assert!(!entries.is_empty(), "timeline {} should have entries", timeline);
             for (_, entry) in &entries {
-                let event = segment_manager.read_event(entry).unwrap();
+                let event = h.segment_manager.read_event(entry).unwrap();
                 assert_eq!(event.timeline_id, timeline);
             }
         }
@@ -520,7 +682,7 @@ mod tests {
     #[tokio::test]
     async fn test_full_compaction_pipeline() {
         let dir = tempfile::tempdir().unwrap();
-        let (write_cache, segment_manager, index, task) = setup_test(dir.path(), 2, 2);
+        let h = setup_test(dir.path(), 2, 2);
 
         for batch in 0..4 {
             for timeline in 1..=2i64 {
@@ -532,23 +694,80 @@ mod tests {
                     crc32: None,
                     timestamp: batch * 100,
                 };
-                write_cache.put_direct(event, true);
+                h.write_cache.put_direct(event, true);
             }
-            write_cache.try_seal();
-            task.compact().await.unwrap();
+            h.write_cache.try_seal();
+            h.l1.flush().await.unwrap();
+            h.l2.merge().await.unwrap();
+            h.l3.split().await.unwrap();
         }
 
-        // After enough compactions, should have L3 segments (one per timeline)
-        let l3 = segment_manager.segments_at_level(3);
+        let l3 = h.segment_manager.segments_at_level(3);
         assert_eq!(l3.len(), 2, "expected 2 L3 segments (one per timeline)");
 
         for timeline in 1..=2i64 {
-            let entries = index.scan_index(timeline, 0, 10);
+            let entries = h.index.scan_index(timeline, 0, 10);
             assert_eq!(entries.len(), 4);
             for (_, entry) in &entries {
-                let event = segment_manager.read_event(entry).unwrap();
+                let event = h.segment_manager.read_event(entry).unwrap();
                 assert_eq!(event.timeline_id, timeline);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_spawn_and_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let segments_dir = dir.path().join("segments");
+        let index_dir = dir.path().join("index");
+
+        let write_cache = WriteCache::new(64 * 1024 * 1024);
+        let segment_manager = Arc::new(
+            SegmentManager::recover(segments_dir, IoMode::Basic).unwrap(),
+        );
+        let index = Storage::new(StorageOptions {
+            path: index_dir.to_string_lossy().to_string(),
+        })
+        .unwrap();
+
+        let context = CancellationToken::new();
+
+        let pipeline = CompactionPipeline::spawn(
+            write_cache.clone(),
+            segment_manager.clone(),
+            index.clone(),
+            context.clone(),
+            Duration::from_millis(50),
+            2,
+            2,
+            None,
+        );
+
+        // Write some data and seal to trigger the pipeline
+        for i in 0..3 {
+            let event = Event {
+                timeline_id: 1,
+                term: 1,
+                offset: i,
+                payload: Some(format!("data_{}", i).into_bytes().into()),
+                crc32: None,
+                timestamp: i * 100,
+            };
+            write_cache.put_direct(event, true);
+        }
+        write_cache.try_seal();
+
+        // Give pipeline time to process
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Should have flushed to L1
+        assert!(h_segment_manager_has_l1(&segment_manager));
+
+        context.cancel();
+        pipeline.shutdown().await;
+    }
+
+    fn h_segment_manager_has_l1(mgr: &SegmentManager) -> bool {
+        !mgr.segments_at_level(1).is_empty()
     }
 }

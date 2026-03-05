@@ -3,7 +3,7 @@ use crate::actor::read_handle_group::ReadHandleGroup;
 use crate::actor::write_handle_group::WriteActorGroup;
 use crate::error::unit_error::UnitError;
 use crate::option::unit_options::{ServerOptions, UnitOptions};
-use crate::storage::blob::compaction::CompactionTask;
+use crate::storage::blob::compaction::CompactionPipeline;
 use crate::storage::blob::manager::SegmentManager;
 use crate::storage::level_iterator::LevelIterator;
 use crate::storage::index::{Storage, StorageOptions};
@@ -32,7 +32,7 @@ const DEFAULT_INFLIGHT_NUM: usize = 4096;
 pub struct Unit {
     context: CancellationToken,
     external_handle: JoinHandle<()>,
-    compaction_handle: JoinHandle<()>,
+    compaction_pipeline: CompactionPipeline,
     catalog: Arc<dyn Catalog>,
     address: String,
 }
@@ -125,7 +125,7 @@ impl Unit {
             merged_reader,
         ));
 
-        let compaction_task = CompactionTask::new(
+        let compaction_pipeline = CompactionPipeline::spawn(
             write_cache,
             segment_manager,
             storage,
@@ -135,10 +135,9 @@ impl Unit {
             options.compaction.l2_compaction_trigger,
             remote_store,
         );
-        let compaction_handle = compaction_task.spawn();
         info!(
             interval_ms = options.compaction.interval_ms,
-            "compaction task started"
+            "compaction pipeline started"
         );
 
         let unit_service = UnitService::new(write_group, read_group, timeline_state.clone());
@@ -161,7 +160,7 @@ impl Unit {
         Ok(Self {
             context,
             external_handle,
-            compaction_handle,
+            compaction_pipeline,
             catalog,
             address,
         })
@@ -178,9 +177,7 @@ impl Unit {
 
         self.context.cancel();
 
-        if let Err(err) = self.compaction_handle.await {
-            error!(error = ?err, "unexpected error in compaction task");
-        }
+        self.compaction_pipeline.shutdown().await;
         if let Err(err) = self.external_handle.await {
             error!(error = ?err, "unexpected error closing external service");
         }
