@@ -438,7 +438,10 @@ async fn serve_prometheus(
                             let body = encoder.encode_to_string(&metric_families)
                                 .unwrap_or_default();
                             Ok::<_, hyper::Error>(
-                                hyper::Response::new(Full::new(hyper::body::Bytes::from(body)))
+                                hyper::Response::builder()
+                                    .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+                                    .body(Full::new(hyper::body::Bytes::from(body)))
+                                    .unwrap()
                             )
                         }
                     });
