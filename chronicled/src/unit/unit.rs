@@ -12,6 +12,7 @@ use crate::storage::index::{Storage, StorageOptions};
 use crate::storage::write_cache::WriteCache;
 use crate::unit::timeline_state::TimelineStateManager;
 use crate::unit::unit_service::UnitService;
+use crate::wal::checkpoint;
 use crate::wal::wal::{Wal, WalOptions};
 use catalog::Catalog;
 use chronicle_proto::pb_catalog::{UnitRegistration, UnitStatus};
@@ -98,8 +99,11 @@ impl Unit {
         )?);
         info!(dir = %options.segments.dir, "segment manager recovered");
 
+        let wal_checkpoint = checkpoint::read_checkpoint(&storage);
+        info!(checkpoint_segment = wal_checkpoint.segment_id, "wal checkpoint loaded");
+
         info!("replaying wal into write cache");
-        let mut stream = wal.read_stream().await;
+        let mut stream = wal.read_stream_from(wal_checkpoint.segment_id).await;
         let mut replayed = 0u64;
         while let Some(result) = stream.next().await {
             match result {

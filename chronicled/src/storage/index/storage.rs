@@ -239,6 +239,19 @@ impl Storage {
             .map_err(|e| UnitError::Storage(e.to_string()))
     }
 
+    /// Store a raw key-value pair (used for WAL checkpoint, etc.).
+    pub fn put_raw(&self, key: &[u8], value: &[u8]) -> Result<(), UnitError> {
+        self.inner
+            .database
+            .put_opt(key, value, &self.inner.write_options)
+            .map_err(|e| UnitError::Storage(e.to_string()))
+    }
+
+    /// Retrieve a raw value by key.
+    pub fn get_raw(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.inner.database.get(key).ok().flatten()
+    }
+
     /// Retrieve all segment metadata entries as (segment_id, raw_value).
     pub fn all_segment_meta_raw(&self) -> Vec<(u64, Vec<u8>)> {
         let prefix = [SEGMENT_META_PREFIX];

@@ -1,3 +1,4 @@
+pub mod checkpoint;
 pub mod wal;
 
 pub use crate::segment::Segment;
