@@ -435,6 +435,7 @@ mod tests {
     fn test_index(dir: &std::path::Path) -> Storage {
         Storage::new(StorageOptions {
             path: dir.join("index").to_string_lossy().to_string(),
+            index: None,
         }).unwrap()
     }
 

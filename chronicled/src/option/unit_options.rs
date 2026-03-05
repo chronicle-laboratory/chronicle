@@ -1,6 +1,8 @@
 use serde::Deserialize;
 use std::net::SocketAddr;
 
+use super::auto_config::AutoConfig;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum IoMode {
@@ -73,14 +75,14 @@ impl Default for LogOptions {
 
 #[derive(Debug, Deserialize)]
 pub struct CompactionOptions {
-    #[serde(default = "default_compaction_interval_ms")]
-    pub interval_ms: u64,
-    #[serde(default = "default_write_cache_capacity_mb")]
-    pub write_cache_capacity_mb: usize,
-    #[serde(default = "default_l1_compaction_trigger")]
-    pub l1_compaction_trigger: usize,
-    #[serde(default = "default_l2_compaction_trigger")]
-    pub l2_compaction_trigger: usize,
+    /// Polling interval in ms. None = auto (5000ms).
+    pub interval_ms: Option<u64>,
+    /// Write cache capacity in MB. None = auto (10% of system memory).
+    pub write_cache_capacity_mb: Option<usize>,
+    /// L1 segment count before L2 merge. None = auto (4).
+    pub l1_compaction_trigger: Option<usize>,
+    /// L2 segment count before L3 split. None = auto (4).
+    pub l2_compaction_trigger: Option<usize>,
     #[serde(default)]
     pub offload: Option<OffloadOptions>,
 }
@@ -88,11 +90,35 @@ pub struct CompactionOptions {
 impl Default for CompactionOptions {
     fn default() -> Self {
         Self {
-            interval_ms: default_compaction_interval_ms(),
-            write_cache_capacity_mb: default_write_cache_capacity_mb(),
-            l1_compaction_trigger: default_l1_compaction_trigger(),
-            l2_compaction_trigger: default_l2_compaction_trigger(),
+            interval_ms: None,
+            write_cache_capacity_mb: None,
+            l1_compaction_trigger: None,
+            l2_compaction_trigger: None,
             offload: None,
+        }
+    }
+}
+
+/// Resolved compaction options with all values filled in.
+#[derive(Debug, Clone)]
+pub struct ResolvedCompactionOptions {
+    pub interval_ms: u64,
+    pub write_cache_capacity_mb: usize,
+    pub l1_compaction_trigger: usize,
+    pub l2_compaction_trigger: usize,
+    pub offload: Option<OffloadOptions>,
+}
+
+impl CompactionOptions {
+    pub fn resolve(&self, auto: &AutoConfig) -> ResolvedCompactionOptions {
+        ResolvedCompactionOptions {
+            interval_ms: self.interval_ms.unwrap_or(auto.compaction_interval_ms),
+            write_cache_capacity_mb: self
+                .write_cache_capacity_mb
+                .unwrap_or(auto.write_cache_capacity_mb),
+            l1_compaction_trigger: self.l1_compaction_trigger.unwrap_or(auto.l1_compaction_trigger),
+            l2_compaction_trigger: self.l2_compaction_trigger.unwrap_or(auto.l2_compaction_trigger),
+            offload: self.offload.clone(),
         }
     }
 }
@@ -106,16 +132,98 @@ pub struct OffloadOptions {
     pub region: Option<String>,
 }
 
+/// RocksDB index tuning. None = auto from system environment.
+#[derive(Debug, Deserialize)]
+pub struct IndexOptions {
+    /// Block cache size in MB. None = auto (25% of system memory).
+    pub block_cache_mb: Option<usize>,
+    /// Memtable (write buffer) size in MB. None = auto (5% of system memory).
+    pub write_buffer_mb: Option<usize>,
+    /// Number of LSM levels. None = auto (4).
+    pub num_levels: Option<i32>,
+    /// SST target file size in MB. None = auto (4-16MB based on memory).
+    pub target_file_size_mb: Option<u64>,
+}
+
+impl Default for IndexOptions {
+    fn default() -> Self {
+        Self {
+            block_cache_mb: None,
+            write_buffer_mb: None,
+            num_levels: None,
+            target_file_size_mb: None,
+        }
+    }
+}
+
+/// Resolved index options with all values filled in.
+#[derive(Debug, Clone)]
+pub struct ResolvedIndexOptions {
+    pub block_cache_bytes: usize,
+    pub write_buffer_size: usize,
+    pub num_levels: i32,
+    pub target_file_size_base: u64,
+    pub max_bytes_for_level_base: u64,
+}
+
+impl IndexOptions {
+    pub fn resolve(&self, auto: &AutoConfig) -> ResolvedIndexOptions {
+        let block_cache_bytes = self
+            .block_cache_mb
+            .map(|mb| mb * 1024 * 1024)
+            .unwrap_or(auto.block_cache_bytes);
+        let write_buffer_size = self
+            .write_buffer_mb
+            .map(|mb| mb * 1024 * 1024)
+            .unwrap_or(auto.write_buffer_size);
+        let target_file_size_base = self
+            .target_file_size_mb
+            .map(|mb| mb * 1024 * 1024)
+            .unwrap_or(auto.target_file_size_base);
+        let num_levels = self.num_levels.unwrap_or(auto.num_levels);
+        let max_bytes_for_level_base = target_file_size_base * 4;
+
+        ResolvedIndexOptions {
+            block_cache_bytes,
+            write_buffer_size,
+            num_levels,
+            target_file_size_base,
+            max_bytes_for_level_base,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SegmentOptions {
     #[serde(default = "default_segments_dir")]
     pub dir: String,
+    /// Segment size in MB (mmap initial capacity, WAL max size). None = auto.
+    pub segment_size_mb: Option<u64>,
 }
 
 impl Default for SegmentOptions {
     fn default() -> Self {
         Self {
             dir: default_segments_dir(),
+            segment_size_mb: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedSegmentOptions {
+    pub dir: String,
+    pub segment_size: u64,
+}
+
+impl SegmentOptions {
+    pub fn resolve(&self, auto: &AutoConfig) -> ResolvedSegmentOptions {
+        ResolvedSegmentOptions {
+            dir: self.dir.clone(),
+            segment_size: self
+                .segment_size_mb
+                .map(|mb| mb * 1024 * 1024)
+                .unwrap_or(auto.segment_size),
         }
     }
 }
@@ -138,6 +246,8 @@ pub struct UnitOptions {
     pub segments: SegmentOptions,
     #[serde(default)]
     pub io_mode: IoMode,
+    #[serde(default)]
+    pub index: IndexOptions,
 }
 
 impl Default for UnitOptions {
@@ -151,6 +261,7 @@ impl Default for UnitOptions {
             compaction: CompactionOptions::default(),
             segments: SegmentOptions::default(),
             io_mode: IoMode::default(),
+            index: IndexOptions::default(),
         }
     }
 }
@@ -177,22 +288,6 @@ fn default_wal_dir() -> String {
     path.to_string_lossy().to_string()
 }
 
-fn default_compaction_interval_ms() -> u64 {
-    5000
-}
-
-fn default_write_cache_capacity_mb() -> usize {
-    64
-}
-
-fn default_l1_compaction_trigger() -> usize {
-    4
-}
-
-fn default_l2_compaction_trigger() -> usize {
-    4
-}
-
 fn default_offload_prefix() -> String {
     "chronicle/segments".to_string()
 }
@@ -203,4 +298,3 @@ fn default_segments_dir() -> String {
     path.push("segments");
     path.to_string_lossy().to_string()
 }
-

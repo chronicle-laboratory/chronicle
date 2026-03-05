@@ -2,6 +2,7 @@ use crate::unit::admin_service::AdminService;
 use crate::actor::read_handle_group::ReadHandleGroup;
 use crate::actor::write_handle_group::WriteActorGroup;
 use crate::error::unit_error::UnitError;
+use crate::option::auto_config::{AutoConfig, SystemEnv};
 use crate::option::unit_options::{ServerOptions, UnitOptions};
 use crate::storage::blob::compaction::CompactionPipeline;
 use crate::storage::blob::manager::SegmentManager;
@@ -45,8 +46,15 @@ impl Unit {
         info!("unit initializing");
         let context = CancellationToken::new();
 
+        let env = SystemEnv::detect();
+        let auto = AutoConfig::from_env_with_io(&env, options.io_mode);
+
+        let resolved_compaction = options.compaction.resolve(&auto);
+        let resolved_index = options.index.resolve(&auto);
+
         let storage = Storage::new(StorageOptions {
             path: options.storage.dir.clone(),
+            index: Some(resolved_index),
         })?;
         info!(path = %options.storage.dir, "storage index opened");
 
@@ -58,11 +66,11 @@ impl Unit {
         .await?;
         info!(dir = %options.wal.dir, "wal opened");
 
-        let capacity = options.compaction.write_cache_capacity_mb * 1024 * 1024;
+        let capacity = resolved_compaction.write_cache_capacity_mb * 1024 * 1024;
         let write_cache = WriteCache::new(capacity);
 
         let remote_store: Option<Arc<dyn crate::storage::blob::remote::RemoteStore>> =
-            if let Some(ref offload_opts) = options.compaction.offload {
+            if let Some(ref offload_opts) = resolved_compaction.offload {
                 let s3 = crate::storage::blob::remote::S3RemoteStore::new(
                     offload_opts.bucket.clone(),
                     offload_opts.prefix.clone(),
@@ -131,13 +139,13 @@ impl Unit {
             segment_manager,
             storage,
             context.clone(),
-            Duration::from_millis(options.compaction.interval_ms),
-            options.compaction.l1_compaction_trigger,
-            options.compaction.l2_compaction_trigger,
+            Duration::from_millis(resolved_compaction.interval_ms),
+            resolved_compaction.l1_compaction_trigger,
+            resolved_compaction.l2_compaction_trigger,
             remote_store,
         );
         info!(
-            interval_ms = options.compaction.interval_ms,
+            interval_ms = resolved_compaction.interval_ms,
             "compaction pipeline started"
         );
 

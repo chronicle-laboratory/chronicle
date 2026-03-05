@@ -59,3 +59,4 @@ aws-sdk-s3 = "1.82.0"
 aws-config = { version = "1.6.3", features = ["behavior-version-latest"] }
 bytes = "1.10"
 lru = "0.14"
+sysinfo = { version = "0.34", default-features = false, features = ["system"] }

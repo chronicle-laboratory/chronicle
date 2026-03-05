@@ -2,9 +2,13 @@ use std::collections::HashSet;
 use std::fs;
 use std::sync::Arc;
 
-use rocksdb::{DB, DBCompressionType, LogLevel, Options, WriteBatch, WriteOptions};
+use rocksdb::{
+    BlockBasedOptions, Cache, DB, DBCompressionType, LogLevel, Options, SliceTransform,
+    WriteBatch, WriteOptions,
+};
 
 use crate::error::unit_error::UnitError;
+use crate::option::unit_options::ResolvedIndexOptions;
 
 use super::entry::{IndexEntry, decode_key, encode_key};
 
@@ -37,6 +41,7 @@ pub struct Storage {
 
 pub struct StorageOptions {
     pub path: String,
+    pub index: Option<ResolvedIndexOptions>,
 }
 
 impl Storage {
@@ -44,14 +49,49 @@ impl Storage {
         fs::create_dir_all(&options.path)
             .map_err(|e| UnitError::Storage(format!("failed to create storage directory: {}", e)))?;
 
+        let idx = options.index.unwrap_or(ResolvedIndexOptions {
+            block_cache_bytes: 256 * 1024 * 1024,
+            write_buffer_size: 4 * 1024 * 1024,
+            num_levels: 4,
+            target_file_size_base: 4 * 1024 * 1024,
+            max_bytes_for_level_base: 16 * 1024 * 1024,
+        });
+
         let mut db_options = Options::default();
         db_options.create_if_missing(true);
-        db_options.set_compression_type(DBCompressionType::Lz4);
-        db_options.set_bottommost_compression_type(DBCompressionType::Zstd);
         db_options.set_log_level(LogLevel::Info);
         db_options.set_keep_log_file_num(10);
+
         // Index is rebuildable from segment files — WAL is unnecessary write amplification.
         db_options.set_manual_wal_flush(true);
+
+        // Compression: LZ4 for mid levels, Zstd for cold data.
+        db_options.set_compression_type(DBCompressionType::Lz4);
+        db_options.set_bottommost_compression_type(DBCompressionType::Zstd);
+
+        // Prefix extractor: first 8 bytes = timeline_id.
+        db_options.set_prefix_extractor(SliceTransform::create_fixed_prefix(8));
+
+        // Memtable sizing from auto-config.
+        db_options.set_write_buffer_size(idx.write_buffer_size);
+        db_options.set_max_write_buffer_number(3);
+        db_options.set_min_write_buffer_number_to_merge(2);
+
+        // LSM levels and SST targets from auto-config.
+        db_options.set_num_levels(idx.num_levels);
+        db_options.set_target_file_size_base(idx.target_file_size_base);
+        db_options.set_max_bytes_for_level_base(idx.max_bytes_for_level_base);
+        db_options.set_level_compaction_dynamic_level_bytes(true);
+
+        // Block cache for fast reads — sized from auto-config.
+        let cache = Cache::new_lru_cache(idx.block_cache_bytes);
+        let mut block_options = BlockBasedOptions::default();
+        block_options.set_block_cache(&cache);
+        block_options.set_block_size(4 * 1024);
+        block_options.set_bloom_filter(10.0, false);
+        block_options.set_cache_index_and_filter_blocks(true);
+        block_options.set_pin_l0_filter_and_index_blocks_in_cache(true);
+        db_options.set_block_based_table_factory(&block_options);
 
         let db = DB::open(&db_options, &options.path)
             .map_err(|err| UnitError::Storage(err.to_string()))?;

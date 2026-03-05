@@ -53,6 +53,7 @@ aws-sdk-s3 = { workspace = true }
 aws-config = { workspace = true }
 bytes = { workspace = true }
 lru = { workspace = true }
+sysinfo = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.8"

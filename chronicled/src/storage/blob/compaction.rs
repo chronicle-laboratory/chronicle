@@ -146,6 +146,7 @@ mod tests {
         let write_cache = WriteCache::new(64 * 1024 * 1024);
         let index = Storage::new(StorageOptions {
             path: index_dir.to_string_lossy().to_string(),
+            index: None,
         })
         .unwrap();
         let segment_manager = Arc::new(
@@ -321,6 +322,7 @@ mod tests {
         {
             let index = Storage::new(StorageOptions {
                 path: index_dir.to_string_lossy().to_string(),
+                index: None,
             }).unwrap();
             let mgr = SegmentManager::recover(segments_dir.clone(), IoMode::Basic, index).unwrap();
             let w = mgr.new_writer_at_level(1).await.unwrap();
@@ -333,6 +335,7 @@ mod tests {
 
         let index = Storage::new(StorageOptions {
             path: index_dir.to_string_lossy().to_string(),
+            index: None,
         }).unwrap();
         let mgr = SegmentManager::recover(segments_dir, IoMode::Basic, index).unwrap();
         assert_eq!(mgr.segments_at_level(1).len(), 1);
@@ -385,6 +388,7 @@ mod tests {
         let write_cache = WriteCache::new(64 * 1024 * 1024);
         let index = Storage::new(StorageOptions {
             path: index_dir.to_string_lossy().to_string(),
+            index: None,
         })
         .unwrap();
         let segment_manager = Arc::new(
