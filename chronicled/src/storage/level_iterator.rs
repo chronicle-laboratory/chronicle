@@ -6,7 +6,7 @@ use futures_util::Stream;
 use tracing::warn;
 
 use crate::storage::TimelineReader;
-use crate::storage::segment::manager::SegmentManager;
+use crate::storage::blob::manager::SegmentManager;
 use crate::storage::index::Storage;
 use crate::storage::write_cache::WriteCache;
 

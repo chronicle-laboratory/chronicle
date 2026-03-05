@@ -1,9 +1,9 @@
 use chronicle_proto::pb_ext::Event;
 use futures_util::Stream;
 
+pub mod blob;
 pub mod index;
 pub mod level_iterator;
-pub mod segment;
 pub mod write_cache;
 
 pub trait TimelineReader {

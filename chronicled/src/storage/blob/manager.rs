@@ -8,27 +8,16 @@ use chronicle_proto::pb_ext::Event;
 
 use crate::error::unit_error::UnitError;
 use crate::option::unit_options::IoMode;
-use crate::storage::segment::file::{SegmentFileReader, SegmentFileWriter};
-use crate::storage::segment::mmap_reader::MmapSegmentReader;
+use crate::segment::Segment;
+use crate::segment::direct::DirectSegment;
+use crate::segment::mmap::MmapSegment;
+use crate::segment::standard::StandardSegment;
+use super::{BlobReader, BlobWriter};
 use crate::storage::index::IndexEntry;
-
-enum SegmentReader {
-    Basic(SegmentFileReader),
-    Mmap(MmapSegmentReader),
-}
-
-impl SegmentReader {
-    fn read_event(&self, byte_offset: u64, length: u32) -> Result<Event, UnitError> {
-        match self {
-            SegmentReader::Basic(r) => r.read_event(byte_offset, length),
-            SegmentReader::Mmap(r) => r.read_event(byte_offset, length),
-        }
-    }
-}
 
 pub struct SegmentManager {
     segments_dir: PathBuf,
-    readers: RwLock<HashMap<u64, SegmentReader>>,
+    readers: RwLock<HashMap<u64, BlobReader>>,
     next_segment_id: AtomicU64,
     io_mode: IoMode,
 }
@@ -64,10 +53,32 @@ impl SegmentManager {
         })
     }
 
-    pub fn new_writer(&self) -> Result<SegmentFileWriter, UnitError> {
+    pub async fn new_writer(&self) -> Result<BlobWriter, UnitError> {
         let id = self.next_segment_id.fetch_add(1, Ordering::Relaxed);
         let path = self.segment_path(id);
-        SegmentFileWriter::new(&path, id)
+
+        let segment: Box<dyn Segment> = match self.io_mode {
+            IoMode::Advanced => {
+                let ds = DirectSegment::new(path)
+                    .await
+                    .map_err(|e| UnitError::Storage(e.to_string()))?;
+                Box::new(ds)
+            }
+            IoMode::Basic => {
+                let s = StandardSegment::new(path)
+                    .await
+                    .map_err(|e| UnitError::Storage(e.to_string()))?;
+                Box::new(s)
+            }
+            IoMode::Mmap => {
+                let ms = MmapSegment::new(path)
+                    .await
+                    .map_err(|e| UnitError::Storage(e.to_string()))?;
+                Box::new(ms)
+            }
+        };
+
+        Ok(BlobWriter::new(segment, id))
     }
 
     pub fn read_event(&self, entry: &IndexEntry) -> Result<Event, UnitError> {
@@ -79,20 +90,13 @@ impl SegmentManager {
         }
 
         let path = self.segment_path(entry.segment_id);
-        let reader = self.open_reader(&path)?;
+        let reader = BlobReader::open(&path)?;
         let event = reader.read_event(entry.byte_offset, entry.length)?;
         self.readers
             .write()
             .unwrap()
             .insert(entry.segment_id, reader);
         Ok(event)
-    }
-
-    fn open_reader(&self, path: &PathBuf) -> Result<SegmentReader, UnitError> {
-        match self.io_mode {
-            IoMode::Advanced => MmapSegmentReader::open(path).map(SegmentReader::Mmap),
-            IoMode::Basic => SegmentFileReader::open(path).map(SegmentReader::Basic),
-        }
     }
 
     fn segment_path(&self, id: u64) -> PathBuf {
@@ -111,8 +115,8 @@ mod tests {
         assert_eq!(mgr.next_segment_id.load(Ordering::Relaxed), 0);
     }
 
-    #[test]
-    fn test_segment_manager_write_and_read() {
+    #[tokio::test]
+    async fn test_segment_manager_write_and_read() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = SegmentManager::recover(dir.path().to_path_buf(), IoMode::Basic).unwrap();
 
@@ -125,10 +129,10 @@ mod tests {
             timestamp: 999,
         };
 
-        let mut writer = mgr.new_writer().unwrap();
+        let mut writer = mgr.new_writer().await.unwrap();
         let seg_id = writer.segment_id();
-        let (byte_offset, length) = writer.write_entry(&event).unwrap();
-        writer.finish().unwrap();
+        let (byte_offset, length) = writer.write_entry(&event).await.unwrap();
+        writer.finish().await.unwrap();
 
         let entry = IndexEntry {
             segment_id: seg_id,
@@ -142,24 +146,26 @@ mod tests {
         assert_eq!(read_event.payload, Some(b"test_payload".to_vec().into()));
     }
 
-    #[test]
-    fn test_segment_manager_recover_existing() {
+    #[tokio::test]
+    async fn test_segment_manager_recover_existing() {
         let dir = tempfile::tempdir().unwrap();
 
         {
             let mgr = SegmentManager::recover(dir.path().to_path_buf(), IoMode::Basic).unwrap();
-            let _ = mgr.new_writer().unwrap();
-            let _ = mgr.new_writer().unwrap();
+            let writer = mgr.new_writer().await.unwrap();
+            writer.finish().await.unwrap();
+            let writer = mgr.new_writer().await.unwrap();
+            writer.finish().await.unwrap();
         }
 
         let mgr = SegmentManager::recover(dir.path().to_path_buf(), IoMode::Basic).unwrap();
         assert_eq!(mgr.next_segment_id.load(Ordering::Relaxed), 2);
     }
 
-    #[test]
-    fn test_segment_manager_mmap_read() {
+    #[tokio::test]
+    async fn test_segment_manager_mmap_write_and_read() {
         let dir = tempfile::tempdir().unwrap();
-        let mgr = SegmentManager::recover(dir.path().to_path_buf(), IoMode::Advanced).unwrap();
+        let mgr = SegmentManager::recover(dir.path().to_path_buf(), IoMode::Mmap).unwrap();
 
         let event = Event {
             timeline_id: 7,
@@ -170,10 +176,10 @@ mod tests {
             timestamp: 555,
         };
 
-        let mut writer = mgr.new_writer().unwrap();
+        let mut writer = mgr.new_writer().await.unwrap();
         let seg_id = writer.segment_id();
-        let (byte_offset, length) = writer.write_entry(&event).unwrap();
-        writer.finish().unwrap();
+        let (byte_offset, length) = writer.write_entry(&event).await.unwrap();
+        writer.finish().await.unwrap();
 
         let entry = IndexEntry {
             segment_id: seg_id,

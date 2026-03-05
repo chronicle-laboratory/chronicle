@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 pub enum IoMode {
     Basic,
     Advanced,
+    Mmap,
 }
 
 impl Default for IoMode {

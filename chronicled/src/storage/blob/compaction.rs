@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::error::unit_error::UnitError;
-use crate::storage::segment::manager::SegmentManager;
+use super::manager::SegmentManager;
 use crate::storage::index::{IndexEntry, Storage};
 use crate::storage::write_cache::WriteCache;
 
@@ -47,19 +47,19 @@ impl CompactionTask {
             loop {
                 tokio::select! {
                     _ = self.context.cancelled() => {
-                        if let Err(e) = self.compact() {
+                        if let Err(e) = self.compact().await {
                             warn!(error = ?e, "final compaction failed");
                         }
                         info!("compaction task stopped");
                         break;
                     }
                     _ = interval.tick() => {
-                        if let Err(e) = self.compact() {
+                        if let Err(e) = self.compact().await {
                             warn!(error = ?e, "compaction failed");
                         }
                     }
                     _ = self.flush_notify.notified() => {
-                        if let Err(e) = self.compact() {
+                        if let Err(e) = self.compact().await {
                             warn!(error = ?e, "flush-triggered compaction failed");
                         }
                     }
@@ -68,7 +68,7 @@ impl CompactionTask {
         })
     }
 
-    fn compact(&self) -> Result<(), UnitError> {
+    async fn compact(&self) -> Result<(), UnitError> {
         let sealed = match self.write_cache.sealed_data() {
             Some(s) => s,
             None => return Ok(()),
@@ -81,7 +81,7 @@ impl CompactionTask {
 
         let entries_count = sealed.index.len();
 
-        let mut writer = self.segment_manager.new_writer()?;
+        let mut writer = self.segment_manager.new_writer().await?;
         let segment_id = writer.segment_id();
         let mut index_entries = Vec::with_capacity(entries_count);
 
@@ -90,7 +90,7 @@ impl CompactionTask {
             let &idx = entry.value();
             let data = &sealed.buffer[idx as usize];
             if let Ok(event) = Event::decode(data.as_slice()) {
-                let (byte_offset, length) = writer.write_entry(&event)?;
+                let (byte_offset, length) = writer.write_entry(&event).await?;
                 index_entries.push((
                     (timeline_id, offset),
                     IndexEntry {
@@ -102,7 +102,7 @@ impl CompactionTask {
             }
         }
 
-        writer.finish()?;
+        writer.finish().await?;
         self.index.put_index_batch(&index_entries)?;
         self.write_cache.clear_sealed();
 

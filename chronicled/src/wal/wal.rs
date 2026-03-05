@@ -1,9 +1,12 @@
 use crate::error::unit_error::UnitError;
 use crate::option::unit_options::IoMode;
+use crate::segment::Segment;
+use crate::segment::DEFAULT_MAX_SEGMENT_SIZE;
+use crate::segment::direct::DirectSegment;
+use crate::segment::mmap::MmapSegment;
+use crate::segment::record::{Record, RecordBatch};
+use crate::segment::standard::StandardSegment;
 use crate::wal::INVALID_OFFSET;
-use crate::wal::direct_segment::DirectSegment;
-use crate::wal::record::{Record, RecordBatch};
-use crate::wal::segment::Segment;
 use async_stream::stream;
 use futures_util::stream::Stream;
 use std::path::PathBuf;
@@ -22,42 +25,13 @@ use tokio::{sync, task};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-const DEFAULT_MAX_SEGMENT_SIZE: u64 = 64 * 1024 * 1024;
 const BATCH_FLUSH_INTERVAL_MS: u64 = 10;
 const MAX_BATCH_SIZE: usize = 512;
-
-enum WalSegment {
-    Basic(Segment),
-    Direct(DirectSegment),
-}
-
-impl WalSegment {
-    async fn write(&mut self, data: &[u8]) -> Result<u64, std::io::Error> {
-        match self {
-            WalSegment::Basic(s) => s.write(data).await,
-            WalSegment::Direct(s) => s.write(data).await,
-        }
-    }
-
-    async fn sync(&self) -> Result<(), std::io::Error> {
-        match self {
-            WalSegment::Basic(s) => s.sync().await,
-            WalSegment::Direct(s) => s.sync().await,
-        }
-    }
-
-    async fn read_all(&mut self) -> Result<Vec<u8>, std::io::Error> {
-        match self {
-            WalSegment::Basic(s) => s.read_all().await,
-            WalSegment::Direct(s) => s.read_all().await,
-        }
-    }
-}
 
 struct Inner {
     buffer: sync::mpsc::Sender<(Vec<u8>, oneshot::Sender<i64>)>,
     synced_offset: Receiver<i64>,
-    writable_segment: Mutex<WalSegment>,
+    writable_segment: Mutex<Box<dyn Segment>>,
     max_segment_size: u64,
 }
 
@@ -101,18 +75,24 @@ impl Wal {
 
         path.push("00000000.log");
 
-        let segment = match options.io_mode {
+        let segment: Box<dyn Segment> = match options.io_mode {
             IoMode::Advanced => {
                 let ds = DirectSegment::new(path)
                     .await
                     .map_err(|e| UnitError::Storage(e.to_string()))?;
-                WalSegment::Direct(ds)
+                Box::new(ds)
             }
             IoMode::Basic => {
-                let s = Segment::new(path)
+                let s = StandardSegment::new(path)
                     .await
                     .map_err(|e| UnitError::Storage(e.to_string()))?;
-                WalSegment::Basic(s)
+                Box::new(s)
+            }
+            IoMode::Mmap => {
+                let ms = MmapSegment::new(path)
+                    .await
+                    .map_err(|e| UnitError::Storage(e.to_string()))?;
+                Box::new(ms)
             }
         };
 

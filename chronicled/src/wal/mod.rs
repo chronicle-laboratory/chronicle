@@ -1,6 +1,5 @@
-pub mod direct_segment;
-pub mod record;
-pub mod segment;
 pub mod wal;
+
+pub use crate::segment::Segment;
 
 pub const INVALID_OFFSET: i64 = -1;
