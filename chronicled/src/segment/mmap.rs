@@ -104,6 +104,14 @@ impl Segment for MmapSegment {
     fn size(&self) -> u64 {
         self.write_offset
     }
+
+    fn as_std_file(&self) -> Option<&std::fs::File> {
+        Some(&self.file)
+    }
+
+    fn advance_offset(&mut self, bytes: u64) {
+        self.write_offset += bytes;
+    }
 }
 
 #[cfg(test)]

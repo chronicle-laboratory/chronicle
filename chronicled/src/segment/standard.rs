@@ -8,6 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 pub struct StandardSegment {
     pub path: PathBuf,
     file: File,
+    std_file: std::fs::File,
     write_offset: u64,
 }
 
@@ -21,9 +22,15 @@ impl StandardSegment {
             .open(&path)
             .await?;
 
+        let std_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)?;
+
         Ok(StandardSegment {
             path,
             file,
+            std_file,
             write_offset: 0,
         })
     }
@@ -55,8 +62,7 @@ impl Segment for StandardSegment {
     }
 
     fn read_at(&self, buf: &mut [u8], offset: u64) -> Result<(), std::io::Error> {
-        let f = std::fs::File::open(&self.path)?;
-        f.read_exact_at(buf, offset)
+        self.std_file.read_exact_at(buf, offset)
     }
 
     fn offset(&self) -> u64 {
@@ -65,5 +71,13 @@ impl Segment for StandardSegment {
 
     fn size(&self) -> u64 {
         self.write_offset
+    }
+
+    fn as_std_file(&self) -> Option<&std::fs::File> {
+        Some(&self.std_file)
+    }
+
+    fn advance_offset(&mut self, bytes: u64) {
+        self.write_offset += bytes;
     }
 }

@@ -8,6 +8,23 @@ use crate::error::unit_error::UnitError;
 
 use super::entry::{IndexEntry, decode_key, encode_key};
 
+const SEGMENT_META_PREFIX: u8 = 0xFF;
+
+fn encode_segment_meta_key(segment_id: u64) -> [u8; 9] {
+    let mut key = [0u8; 9];
+    key[0] = SEGMENT_META_PREFIX;
+    key[1..9].copy_from_slice(&segment_id.to_be_bytes());
+    key
+}
+
+fn decode_segment_meta_key(key: &[u8]) -> Option<u64> {
+    if key.len() == 9 && key[0] == SEGMENT_META_PREFIX {
+        Some(u64::from_be_bytes(key[1..9].try_into().unwrap()))
+    } else {
+        None
+    }
+}
+
 pub(crate) struct Inner {
     pub database: DB,
     pub write_options: WriteOptions,
@@ -156,5 +173,53 @@ impl Storage {
         }
 
         ids
+    }
+
+    /// Store raw segment metadata bytes keyed by segment_id.
+    pub fn put_segment_meta_raw(&self, segment_id: u64, value: &[u8]) -> Result<(), UnitError> {
+        let key = encode_segment_meta_key(segment_id);
+        self.inner
+            .database
+            .put_opt(key, value, &self.inner.write_options)
+            .map_err(|e| UnitError::Storage(e.to_string()))
+    }
+
+    /// Retrieve raw segment metadata bytes by segment_id.
+    pub fn get_segment_meta_raw(&self, segment_id: u64) -> Option<Vec<u8>> {
+        let key = encode_segment_meta_key(segment_id);
+        self.inner.database.get(key).ok().flatten()
+    }
+
+    /// Delete segment metadata by segment_id.
+    pub fn delete_segment_meta(&self, segment_id: u64) -> Result<(), UnitError> {
+        let key = encode_segment_meta_key(segment_id);
+        self.inner
+            .database
+            .delete_opt(key, &self.inner.write_options)
+            .map_err(|e| UnitError::Storage(e.to_string()))
+    }
+
+    /// Retrieve all segment metadata entries as (segment_id, raw_value).
+    pub fn all_segment_meta_raw(&self) -> Vec<(u64, Vec<u8>)> {
+        let prefix = [SEGMENT_META_PREFIX];
+        let iter = self.inner.database.iterator(
+            rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
+        );
+        let mut results = Vec::new();
+
+        for item in iter {
+            match item {
+                Ok((key, value)) => {
+                    if let Some(segment_id) = decode_segment_meta_key(&key) {
+                        results.push((segment_id, value.to_vec()));
+                    } else {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        results
     }
 }

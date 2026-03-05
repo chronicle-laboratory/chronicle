@@ -81,6 +81,7 @@ impl Unit {
             options.io_mode,
             remote_store.clone(),
             64,
+            storage.clone(),
         )?);
         info!(dir = %options.segments.dir, "segment manager recovered");
 

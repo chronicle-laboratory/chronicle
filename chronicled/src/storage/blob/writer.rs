@@ -1,3 +1,5 @@
+use std::fs::File;
+
 use chronicle_proto::pb_ext::Event;
 use prost::Message;
 
@@ -5,6 +7,7 @@ use crate::error::unit_error::UnitError;
 use crate::segment::Segment;
 
 use super::ENTRY_HEADER_SIZE;
+use super::copy::copy_range;
 
 pub struct BlobWriter {
     segment: Box<dyn Segment>,
@@ -21,6 +24,52 @@ impl BlobWriter {
             entry_count: 0,
             size: 0,
         }
+    }
+
+    /// Write raw pre-formatted entry bytes (header + proto) without decode/encode.
+    pub async fn write_raw(&mut self, raw: &[u8]) -> Result<(u64, u32), UnitError> {
+        let total_len = raw.len() as u32;
+        let entry_start = self
+            .segment
+            .write(raw)
+            .await
+            .map_err(|e| UnitError::Storage(e.to_string()))?;
+
+        self.entry_count += 1;
+        self.size += total_len as u64;
+
+        Ok((entry_start, total_len))
+    }
+
+    /// Copy a contiguous range from a source file into this segment.
+    ///
+    /// On Linux, uses `copy_file_range` for zero-copy kernel transfer.
+    /// On other platforms, reads into a buffer and writes.
+    ///
+    /// Returns the destination start offset.
+    pub fn write_range_from(
+        &mut self,
+        source: &File,
+        src_offset: u64,
+        length: u64,
+        entry_count: u64,
+    ) -> Result<u64, UnitError> {
+        let dst_offset = self.size;
+
+        if let Some(dst_file) = self.segment.as_std_file() {
+            copy_range(source, src_offset, dst_file, dst_offset, length)
+                .map_err(|e| UnitError::Storage(format!("copy_range failed: {}", e)))?;
+        } else {
+            return Err(UnitError::Storage(
+                "write_range_from requires a file-backed segment".into(),
+            ));
+        }
+
+        self.segment.advance_offset(length);
+        self.size += length;
+        self.entry_count += entry_count;
+
+        Ok(dst_offset)
     }
 
     pub async fn write_entry(&mut self, event: &Event) -> Result<(u64, u32), UnitError> {

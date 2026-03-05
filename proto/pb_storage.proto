@@ -12,3 +12,26 @@ message EventEntryMeta {
   int64 timestamp = 6;
   int64 payload_size = 7;
 }
+
+message SegmentMeta {
+  uint64 id = 1;
+  uint32 level = 2;
+  uint64 size = 3;
+  uint64 entry_count = 4;
+  SegmentLocation location = 5;
+}
+
+message SegmentLocation {
+  oneof kind {
+    LocalSegment local = 1;
+    RemoteSegment remote = 2;
+  }
+}
+
+message LocalSegment {
+  string path = 1;
+}
+
+message RemoteSegment {
+  string key = 1;
+}
