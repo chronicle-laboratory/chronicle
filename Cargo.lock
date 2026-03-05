@@ -2762,6 +2762,8 @@ dependencies = [
  "chronicle-proto",
  "dashmap",
  "futures-util",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "prost 0.13.5",
  "thiserror 2.0.17",
  "tokio",

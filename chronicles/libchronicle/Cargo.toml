@@ -17,3 +17,5 @@ tonic = { workspace = true }
 dashmap = { workspace = true }
 tracing = { workspace = true }
 prost = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }

@@ -2,6 +2,7 @@ use crate::unit::admin_service::AdminService;
 use crate::actor::read_handle_group::ReadHandleGroup;
 use crate::actor::write_handle_group::WriteActorGroup;
 use crate::error::unit_error::UnitError;
+use crate::observability::{self, ServerMetrics};
 use crate::option::auto_config::{AutoConfig, SystemEnv};
 use crate::option::unit_options::{ServerOptions, UnitOptions};
 use crate::storage::blob::compaction::CompactionPipeline;
@@ -36,6 +37,7 @@ pub struct Unit {
     compaction_pipeline: CompactionPipeline,
     catalog: Arc<dyn Catalog>,
     address: String,
+    _meter_provider: opentelemetry_sdk::metrics::SdkMeterProvider,
 }
 
 impl Unit {
@@ -48,6 +50,9 @@ impl Unit {
 
         let env = SystemEnv::detect();
         let auto = AutoConfig::from_env_with_io(&env, options.io_mode);
+
+        let (meter_provider, meter, prometheus_registry) = observability::init_meter_provider();
+        let _metrics = Arc::new(ServerMetrics::new(&meter));
 
         let resolved_compaction = options.compaction.resolve(&auto);
         let resolved_index = options.index.resolve(&auto);
@@ -153,8 +158,12 @@ impl Unit {
 
         let address = format!("http://{}", options.server.bind_address);
 
-        let external_handle =
-            bg_start_external_service(options.server.clone(), context.clone(), unit_service);
+        let external_handle = bg_start_external_service(
+            options.server.clone(),
+            context.clone(),
+            unit_service,
+            prometheus_registry,
+        );
 
         let registration = UnitRegistration {
             address: address.clone(),
@@ -172,6 +181,7 @@ impl Unit {
             compaction_pipeline,
             catalog,
             address,
+            _meter_provider: meter_provider,
         })
     }
 
@@ -198,24 +208,82 @@ fn bg_start_external_service(
     options: ServerOptions,
     context: CancellationToken,
     unit_service: UnitService,
+    prometheus_registry: prometheus::Registry,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let (health_reporter, health_service) = tonic_health::server::health_reporter();
         health_reporter
             .set_serving::<ChronicleServer<UnitService>>()
             .await;
+
+        // Spawn Prometheus metrics HTTP endpoint on gRPC port + 1.
+        let metrics_addr = std::net::SocketAddr::new(
+            options.bind_address.ip(),
+            options.bind_address.port() + 1,
+        );
+        let metrics_context = context.clone();
+        tokio::spawn(async move {
+            serve_prometheus(metrics_addr, prometheus_registry, metrics_context).await;
+        });
+        info!(addr = %metrics_addr, "prometheus metrics endpoint started");
+
         info!(addr = %options.bind_address, "grpc service starting");
         let serve_future = Server::builder()
             .add_service(health_service)
             .add_service(AdminServer::new(AdminService))
             .add_service(ChronicleServer::new(unit_service))
             .serve_with_shutdown(options.bind_address, context.cancelled());
-        info!("health service started");
-        info!("admin service started");
-        info!("chronicle service started");
         info!("unit ready");
         if let Err(err) = serve_future.await {
             error!(error = %err, "grpc service error");
         }
     })
+}
+
+async fn serve_prometheus(
+    addr: std::net::SocketAddr,
+    registry: prometheus::Registry,
+    context: CancellationToken,
+) {
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
+    use http_body_util::Full;
+
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            error!(error = %e, addr = %addr, "failed to bind prometheus endpoint");
+            return;
+        }
+    };
+
+    loop {
+        tokio::select! {
+            _ = context.cancelled() => break,
+            accepted = listener.accept() => {
+                let (stream, _) = match accepted {
+                    Ok(a) => a,
+                    Err(_) => continue,
+                };
+                let registry = registry.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |_req| {
+                        let registry = registry.clone();
+                        async move {
+                            let encoder = prometheus::TextEncoder::new();
+                            let metric_families = registry.gather();
+                            let body = encoder.encode_to_string(&metric_families)
+                                .unwrap_or_default();
+                            Ok::<_, hyper::Error>(
+                                hyper::Response::new(Full::new(hyper::body::Bytes::from(body)))
+                            )
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), svc)
+                        .await;
+                });
+            }
+        }
+    }
 }

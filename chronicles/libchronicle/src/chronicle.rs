@@ -1,10 +1,12 @@
 use crate::client::unit_client::UnitClient;
 use crate::error::ChronicleError;
 use crate::cursor::TimelineCursor;
+use crate::observability::ClientMetrics;
 use crate::writer::reconciliation;
 use crate::writer::timeline::Timeline;
 use catalog::Catalog;
 use chronicle_proto::pb_catalog::UnitStatus;
+use opentelemetry::metrics::Meter;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::info;
@@ -12,6 +14,9 @@ use tracing::info;
 /// Configuration for the top-level [`Chronicle`] client.
 pub struct ChronicleConfig {
     pub replication_factor: usize,
+    /// Optional OpenTelemetry meter for client-side metrics.
+    /// If None, a no-op meter is used (zero overhead).
+    pub meter: Option<Meter>,
 }
 
 /// Top-level client factory.
@@ -22,6 +27,7 @@ pub struct Chronicle {
     catalog: Arc<dyn Catalog>,
     unit_clients: HashMap<String, UnitClient>,
     config: ChronicleConfig,
+    metrics: Arc<ClientMetrics>,
 }
 
 impl Chronicle {
@@ -30,6 +36,11 @@ impl Chronicle {
         catalog: Arc<dyn Catalog>,
         config: ChronicleConfig,
     ) -> Result<Self, ChronicleError> {
+        let metrics = match &config.meter {
+            Some(meter) => Arc::new(ClientMetrics::new(meter)),
+            None => Arc::new(ClientMetrics::noop()),
+        };
+
         let registrations = catalog.list_units().await?;
 
         let mut unit_clients = HashMap::new();
@@ -44,6 +55,7 @@ impl Chronicle {
             catalog,
             unit_clients,
             config,
+            metrics,
         })
     }
 
