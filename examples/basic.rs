@@ -21,6 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         catalog,
         ChronicleConfig {
             replication_factor: 1,
+            meter: None,
         },
     )
     .await?;

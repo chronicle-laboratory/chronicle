@@ -1,4 +1,4 @@
-use crate::unit::admin_service::AdminService;
+use crate::unit::admin_service::{AdminService, STATE_WRITABLE, STATE_READONLY};
 use crate::actor::read_handle_group::ReadHandleGroup;
 use crate::actor::write_handle_group::WriteActorGroup;
 use crate::error::unit_error::UnitError;
@@ -22,6 +22,7 @@ use chronicle_proto::pb_ext::chronicle_server::ChronicleServer;
 use futures_util::StreamExt;
 use prost::Message;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
@@ -32,10 +33,17 @@ use tracing::{error, info, warn};
 const DEFAULT_ACTOR_NUM: usize = 4;
 const DEFAULT_INFLIGHT_NUM: usize = 4096;
 
+/// Minimum available disk percentage before switching to readonly.
+const DISK_LOW_WATERMARK_PCT: f64 = 5.0;
+/// Disk percentage to recover from readonly back to writable.
+const DISK_HIGH_WATERMARK_PCT: f64 = 10.0;
+
 pub struct Unit {
     context: CancellationToken,
     external_handle: JoinHandle<()>,
+    health_handle: JoinHandle<()>,
     compaction_pipeline: CompactionPipeline,
+    wal: Wal,
     catalog: Arc<dyn Catalog>,
     address: String,
     _meter_provider: opentelemetry_sdk::metrics::SdkMeterProvider,
@@ -145,20 +153,30 @@ impl Unit {
 
         let compaction_pipeline = CompactionPipeline::spawn(
             write_cache,
-            segment_manager,
-            storage,
+            segment_manager.clone(),
+            storage.clone(),
             context.clone(),
             Duration::from_millis(resolved_compaction.interval_ms),
             resolved_compaction.l1_compaction_trigger,
             resolved_compaction.l2_compaction_trigger,
             remote_store,
+            Some(wal.clone()),
         );
         info!(
             interval_ms = resolved_compaction.interval_ms,
             "compaction pipeline started"
         );
 
+        let unit_state = Arc::new(AtomicU8::new(STATE_WRITABLE));
+
         let unit_service = UnitService::new(write_group, read_group, timeline_state.clone());
+
+        let admin_service = AdminService {
+            wal: wal.clone(),
+            segment_manager,
+            index: storage.clone(),
+            state: unit_state.clone(),
+        };
 
         let address = format!("http://{}", options.server.bind_address);
 
@@ -166,7 +184,17 @@ impl Unit {
             options.server.clone(),
             context.clone(),
             unit_service,
+            admin_service,
             prometheus_registry,
+        );
+
+        // Spawn health monitor (disk watcher).
+        let health_handle = bg_health_monitor(
+            context.clone(),
+            unit_state,
+            options.storage.dir.clone(),
+            catalog.clone(),
+            address.clone(),
         );
 
         let registration = UnitRegistration {
@@ -182,7 +210,9 @@ impl Unit {
         Ok(Self {
             context,
             external_handle,
+            health_handle,
             compaction_pipeline,
+            wal,
             catalog,
             address,
             _meter_provider: meter_provider,
@@ -198,9 +228,15 @@ impl Unit {
             info!(address = %self.address, "unit unregistered from catalog");
         }
 
+        // Cancel WAL writer first to stop accepting new writes.
+        self.wal.cancel();
+
         self.context.cancel();
 
         self.compaction_pipeline.shutdown().await;
+        if let Err(err) = self.health_handle.await {
+            error!(error = ?err, "unexpected error closing health monitor");
+        }
         if let Err(err) = self.external_handle.await {
             error!(error = ?err, "unexpected error closing external service");
         }
@@ -212,6 +248,7 @@ fn bg_start_external_service(
     options: ServerOptions,
     context: CancellationToken,
     unit_service: UnitService,
+    admin_service: AdminService,
     prometheus_registry: prometheus::Registry,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -234,7 +271,7 @@ fn bg_start_external_service(
         info!(addr = %options.bind_address, "grpc service starting");
         let serve_future = Server::builder()
             .add_service(health_service)
-            .add_service(AdminServer::new(AdminService))
+            .add_service(AdminServer::new(admin_service))
             .add_service(ChronicleServer::new(unit_service))
             .serve_with_shutdown(options.bind_address, context.cancelled());
         info!("unit ready");
@@ -242,6 +279,89 @@ fn bg_start_external_service(
             error!(error = %err, "grpc service error");
         }
     })
+}
+
+/// Background health monitor that watches disk usage and flips
+/// unit state between WRITABLE and READONLY.
+fn bg_health_monitor(
+    context: CancellationToken,
+    state: Arc<AtomicU8>,
+    data_dir: String,
+    catalog: Arc<dyn Catalog>,
+    address: String,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            tokio::select! {
+                _ = context.cancelled() => {
+                    info!("health monitor stopped");
+                    break;
+                }
+                _ = ticker.tick() => {
+                    check_disk_health(&state, &data_dir, &catalog, &address).await;
+                }
+            }
+        }
+    })
+}
+
+async fn check_disk_health(
+    state: &AtomicU8,
+    data_dir: &str,
+    catalog: &Arc<dyn Catalog>,
+    address: &str,
+) {
+    let c_path = match std::ffi::CString::new(data_dir) {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    let ret = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
+    if ret != 0 {
+        warn!(path = data_dir, "failed to statvfs data directory");
+        return;
+    }
+
+    let total = stat.f_blocks as u64 * stat.f_frsize as u64;
+    let available = stat.f_bavail as u64 * stat.f_frsize as u64;
+
+    if total == 0 {
+        return;
+    }
+
+    let available_pct = (available as f64 / total as f64) * 100.0;
+    let current = state.load(Ordering::Relaxed);
+
+    if current == STATE_WRITABLE && available_pct < DISK_LOW_WATERMARK_PCT {
+        warn!(
+            available_pct = format!("{:.1}", available_pct),
+            "disk low — switching to READONLY"
+        );
+        state.store(STATE_READONLY, Ordering::Relaxed);
+
+        let reg = UnitRegistration {
+            address: address.to_string(),
+            status: UnitStatus::Readonly.into(),
+        };
+        if let Err(e) = catalog.register_unit(&reg).await {
+            warn!(error = ?e, "failed to update catalog to READONLY");
+        }
+    } else if current == STATE_READONLY && available_pct > DISK_HIGH_WATERMARK_PCT {
+        info!(
+            available_pct = format!("{:.1}", available_pct),
+            "disk recovered — switching to WRITABLE"
+        );
+        state.store(STATE_WRITABLE, Ordering::Relaxed);
+
+        let reg = UnitRegistration {
+            address: address.to_string(),
+            status: UnitStatus::Writable.into(),
+        };
+        if let Err(e) = catalog.register_unit(&reg).await {
+            warn!(error = ?e, "failed to update catalog to WRITABLE");
+        }
+    }
 }
 
 async fn serve_prometheus(

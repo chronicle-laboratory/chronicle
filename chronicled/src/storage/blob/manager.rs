@@ -513,6 +513,7 @@ mod tests {
             payload: Some(b"test_payload".to_vec().into()),
             crc32: None,
             timestamp: 999,
+            schema_id: 0,
         };
 
         let mut writer = mgr.new_writer().await.unwrap();
@@ -623,6 +624,7 @@ mod tests {
             payload: Some(b"data".to_vec().into()),
             crc32: None,
             timestamp: 100,
+            schema_id: 0,
         };
 
         let mut writer = mgr.new_writer_at_level(2).await.unwrap();
@@ -661,6 +663,7 @@ mod tests {
             payload: Some(b"mmap_test".to_vec().into()),
             crc32: None,
             timestamp: 555,
+            schema_id: 0,
         };
 
         let mut writer = mgr.new_writer().await.unwrap();

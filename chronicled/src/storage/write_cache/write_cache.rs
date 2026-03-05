@@ -162,6 +162,7 @@ mod tests {
             payload: Some(payload.to_vec().into()),
             crc32: None,
             timestamp: offset * 100,
+            schema_id: 0,
         }
     }
 

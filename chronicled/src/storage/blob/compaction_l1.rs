@@ -10,6 +10,8 @@ use tracing::{info, warn};
 use crate::error::unit_error::UnitError;
 use crate::storage::index::{IndexEntry, Storage};
 use crate::storage::write_cache::WriteCache;
+use crate::wal::checkpoint::{self, WalCheckpoint};
+use crate::wal::wal::Wal;
 use super::manager::SegmentManager;
 
 pub(crate) struct L1FlushTask {
@@ -17,6 +19,7 @@ pub(crate) struct L1FlushTask {
     pub segment_manager: Arc<SegmentManager>,
     pub index: Storage,
     pub flush_notify: Arc<Notify>,
+    pub wal: Option<Wal>,
 }
 
 impl L1FlushTask {
@@ -86,6 +89,25 @@ impl L1FlushTask {
         self.segment_manager.update_meta(segment_id, size, entry_count);
         self.index.put_index_batch(&index_entries)?;
         self.write_cache.clear_sealed();
+
+        // After successful flush, advance WAL checkpoint and trim old segments.
+        if let Some(ref wal) = self.wal {
+            let current_seg = wal.current_segment_id().await;
+            let cp = WalCheckpoint::new(current_seg);
+            if let Err(e) = checkpoint::write_checkpoint(&self.index, &cp) {
+                warn!(error = ?e, "failed to write WAL checkpoint");
+            } else {
+                match wal.trim(current_seg).await {
+                    Ok(trimmed) if trimmed > 0 => {
+                        info!(trimmed, checkpoint_segment = current_seg, "wal segments trimmed");
+                    }
+                    Err(e) => {
+                        warn!(error = ?e, "failed to trim WAL segments");
+                    }
+                    _ => {}
+                }
+            }
+        }
 
         info!(segment_id = segment_id, entries = entries_count, "L1 flush complete");
 

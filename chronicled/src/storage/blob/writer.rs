@@ -140,6 +140,7 @@ mod tests {
             payload: Some(b"hello".to_vec().into()),
             crc32: None,
             timestamp: 100,
+            schema_id: 0,
         };
 
         let (byte_offset, length) = {
@@ -174,6 +175,7 @@ mod tests {
                     payload: Some(format!("event_{}", i).into_bytes().into()),
                     crc32: None,
                     timestamp: i * 100,
+                    schema_id: 0,
                 };
                 let (offset, len) = writer.write_entry(&event).await.unwrap();
                 entries.push((offset, len, i));

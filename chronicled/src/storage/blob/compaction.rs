@@ -14,6 +14,7 @@ use super::compaction_l3::L3SplitTask;
 use super::compaction_l4::L4OffloadTask;
 use crate::storage::index::Storage;
 use crate::storage::write_cache::WriteCache;
+use crate::wal::wal::Wal;
 
 /// Leveled compaction pipeline with independent per-level tasks.
 ///
@@ -38,6 +39,7 @@ impl CompactionPipeline {
         l1_compaction_trigger: usize,
         l2_compaction_trigger: usize,
         remote_store: Option<Arc<dyn RemoteStore>>,
+        wal: Option<Wal>,
     ) -> Self {
         let flush_notify = write_cache.flush_notify();
 
@@ -51,6 +53,7 @@ impl CompactionPipeline {
                     segment_manager,
                     index,
                     flush_notify,
+                    wal,
                 };
                 task.run(context, interval).await;
             })
@@ -160,6 +163,7 @@ mod tests {
             segment_manager: segment_manager.clone(),
             index: index.clone(),
             flush_notify,
+            wal: None,
         };
 
         let l2 = L2MergeTask {
@@ -199,6 +203,7 @@ mod tests {
                 payload: Some(format!("data_{}", i).into_bytes().into()),
                 crc32: None,
                 timestamp: i * 100,
+                schema_id: 0,
             };
             h.write_cache.put_direct(event, true);
         }
@@ -226,6 +231,7 @@ mod tests {
                     payload: Some(format!("batch{}_{}", batch, i).into_bytes().into()),
                     crc32: None,
                     timestamp: offset * 100,
+                    schema_id: 0,
                 };
                 h.write_cache.put_direct(event, true);
             }
@@ -266,6 +272,7 @@ mod tests {
                         payload: Some(format!("t{}_b{}_{}", timeline, batch, i).into_bytes().into()),
                         crc32: None,
                         timestamp: offset * 100,
+                        schema_id: 0,
                     };
                     h.write_cache.put_direct(event, true);
                 }
@@ -287,6 +294,7 @@ mod tests {
                     payload: Some(format!("extra_t{}_{}", timeline, batch).into_bytes().into()),
                     crc32: None,
                     timestamp: offset * 100,
+                    schema_id: 0,
                 };
                 h.write_cache.put_direct(event, true);
             }
@@ -357,6 +365,7 @@ mod tests {
                     payload: Some(format!("t{}_off{}", timeline, batch).into_bytes().into()),
                     crc32: None,
                     timestamp: batch * 100,
+                    schema_id: 0,
                 };
                 h.write_cache.put_direct(event, true);
             }
@@ -406,6 +415,7 @@ mod tests {
             2,
             2,
             None,
+            None,
         );
 
         for i in 0..3 {
@@ -416,6 +426,7 @@ mod tests {
                 payload: Some(format!("data_{}", i).into_bytes().into()),
                 crc32: None,
                 timestamp: i * 100,
+                schema_id: 0,
             };
             write_cache.put_direct(event, true);
         }

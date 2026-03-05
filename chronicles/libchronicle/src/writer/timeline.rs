@@ -294,6 +294,7 @@ impl Writer for Timeline {
                 payload: Some(event.into()),
                 crc32: None,
                 timestamp: now,
+                schema_id: 0,
             };
 
             let item = RecordEventsRequestItem {
