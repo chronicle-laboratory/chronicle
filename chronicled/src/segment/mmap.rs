@@ -84,6 +84,19 @@ impl Segment for MmapSegment {
         Ok(self.mmap[..self.write_offset as usize].to_vec())
     }
 
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> Result<(), std::io::Error> {
+        let start = offset as usize;
+        let end = start + buf.len();
+        if end > self.write_offset as usize {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "read past end of mmap segment",
+            ));
+        }
+        buf.copy_from_slice(&self.mmap[start..end]);
+        Ok(())
+    }
+
     fn offset(&self) -> u64 {
         self.write_offset
     }

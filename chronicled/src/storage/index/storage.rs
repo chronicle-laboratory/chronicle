@@ -1,7 +1,8 @@
+use std::collections::HashSet;
 use std::fs;
 use std::sync::Arc;
 
-use rocksdb::{DB, DBCompressionType, LogLevel, Options, WriteBatch};
+use rocksdb::{DB, DBCompressionType, LogLevel, Options, WriteBatch, WriteOptions};
 
 use crate::error::unit_error::UnitError;
 
@@ -9,6 +10,7 @@ use super::entry::{IndexEntry, decode_key, encode_key};
 
 pub(crate) struct Inner {
     pub database: DB,
+    pub write_options: WriteOptions,
 }
 
 #[derive(Clone)]
@@ -31,12 +33,17 @@ impl Storage {
         db_options.set_bottommost_compression_type(DBCompressionType::Zstd);
         db_options.set_log_level(LogLevel::Info);
         db_options.set_keep_log_file_num(10);
+        // Index is rebuildable from segment files — WAL is unnecessary write amplification.
+        db_options.set_manual_wal_flush(true);
 
         let db = DB::open(&db_options, &options.path)
             .map_err(|err| UnitError::Storage(err.to_string()))?;
 
+        let mut write_options = WriteOptions::default();
+        write_options.disable_wal(true);
+
         Ok(Storage {
-            inner: Arc::new(Inner { database: db }),
+            inner: Arc::new(Inner { database: db, write_options }),
         })
     }
 
@@ -52,7 +59,7 @@ impl Storage {
         }
         self.inner
             .database
-            .write(batch)
+            .write_opt(batch, &self.inner.write_options)
             .map_err(|e| UnitError::Storage(e.to_string()))
     }
 
@@ -102,5 +109,52 @@ impl Storage {
             }
         }
         results
+    }
+
+    /// Full scan of the index, returning all entries whose segment_id is in the given set.
+    pub fn scan_by_segment_ids(
+        &self,
+        segment_ids: &HashSet<u64>,
+    ) -> Vec<((i64, i64), IndexEntry)> {
+        let iter = self.inner.database.iterator(rocksdb::IteratorMode::Start);
+        let mut results = Vec::new();
+
+        for item in iter {
+            match item {
+                Ok((key, value)) => {
+                    if key.len() != 16 || value.len() != 20 {
+                        continue;
+                    }
+                    let entry = IndexEntry::decode(&value);
+                    if segment_ids.contains(&entry.segment_id) {
+                        let (timeline_id, offset) = decode_key(&key);
+                        results.push(((timeline_id, offset), entry));
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        results
+    }
+
+    /// Return the set of all segment IDs referenced in the index.
+    pub fn all_referenced_segment_ids(&self) -> HashSet<u64> {
+        let iter = self.inner.database.iterator(rocksdb::IteratorMode::Start);
+        let mut ids = HashSet::new();
+
+        for item in iter {
+            match item {
+                Ok((_, value)) => {
+                    if value.len() == 20 {
+                        let entry = IndexEntry::decode(&value);
+                        ids.insert(entry.segment_id);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        ids
     }
 }

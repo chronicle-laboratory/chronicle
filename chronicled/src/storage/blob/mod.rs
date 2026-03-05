@@ -1,5 +1,6 @@
 pub mod compaction;
 pub mod manager;
+pub mod remote;
 pub mod reader;
 pub mod writer;
 

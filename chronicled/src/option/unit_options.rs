@@ -77,6 +77,12 @@ pub struct CompactionOptions {
     pub interval_ms: u64,
     #[serde(default = "default_write_cache_capacity_mb")]
     pub write_cache_capacity_mb: usize,
+    #[serde(default = "default_l1_compaction_trigger")]
+    pub l1_compaction_trigger: usize,
+    #[serde(default = "default_l2_compaction_trigger")]
+    pub l2_compaction_trigger: usize,
+    #[serde(default)]
+    pub offload: Option<OffloadOptions>,
 }
 
 impl Default for CompactionOptions {
@@ -84,8 +90,20 @@ impl Default for CompactionOptions {
         Self {
             interval_ms: default_compaction_interval_ms(),
             write_cache_capacity_mb: default_write_cache_capacity_mb(),
+            l1_compaction_trigger: default_l1_compaction_trigger(),
+            l2_compaction_trigger: default_l2_compaction_trigger(),
+            offload: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OffloadOptions {
+    pub bucket: String,
+    #[serde(default = "default_offload_prefix")]
+    pub prefix: String,
+    pub endpoint: Option<String>,
+    pub region: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -165,6 +183,18 @@ fn default_compaction_interval_ms() -> u64 {
 
 fn default_write_cache_capacity_mb() -> usize {
     64
+}
+
+fn default_l1_compaction_trigger() -> usize {
+    4
+}
+
+fn default_l2_compaction_trigger() -> usize {
+    4
+}
+
+fn default_offload_prefix() -> String {
+    "chronicle/segments".to_string()
 }
 
 fn default_segments_dir() -> String {

@@ -55,3 +55,7 @@ liboxia = "0.0.2"
 axum = "0.8"
 memmap2 = "0.9"
 libc = "0.2"
+aws-sdk-s3 = "1.82.0"
+aws-config = { version = "1.6.3", features = ["behavior-version-latest"] }
+bytes = "1.10"
+lru = "0.14"

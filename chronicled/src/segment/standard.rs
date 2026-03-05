@@ -1,5 +1,6 @@
 use super::Segment;
 use std::io::Error;
+use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
@@ -51,6 +52,11 @@ impl Segment for StandardSegment {
         let mut buf = Vec::new();
         self.file.read_to_end(&mut buf).await?;
         Ok(buf)
+    }
+
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> Result<(), std::io::Error> {
+        let f = std::fs::File::open(&self.path)?;
+        f.read_exact_at(buf, offset)
     }
 
     fn offset(&self) -> u64 {

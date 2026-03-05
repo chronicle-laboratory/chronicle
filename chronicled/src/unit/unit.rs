@@ -61,8 +61,27 @@ impl Unit {
         let capacity = options.compaction.write_cache_capacity_mb * 1024 * 1024;
         let write_cache = WriteCache::new(capacity);
 
+        let remote_store: Option<Arc<dyn crate::storage::blob::remote::RemoteStore>> =
+            if let Some(ref offload_opts) = options.compaction.offload {
+                let s3 = crate::storage::blob::remote::S3RemoteStore::new(
+                    offload_opts.bucket.clone(),
+                    offload_opts.prefix.clone(),
+                    offload_opts.endpoint.clone(),
+                    offload_opts.region.clone(),
+                )
+                .await;
+                Some(Arc::new(s3))
+            } else {
+                None
+            };
+
         let segments_dir = PathBuf::from(&options.segments.dir);
-        let segment_manager = Arc::new(SegmentManager::recover(segments_dir, options.io_mode)?);
+        let segment_manager = Arc::new(SegmentManager::recover_with_remote(
+            segments_dir,
+            options.io_mode,
+            remote_store.clone(),
+            64,
+        )?);
         info!(dir = %options.segments.dir, "segment manager recovered");
 
         info!("replaying wal into write cache");
@@ -112,6 +131,9 @@ impl Unit {
             storage,
             context.clone(),
             Duration::from_millis(options.compaction.interval_ms),
+            options.compaction.l1_compaction_trigger,
+            options.compaction.l2_compaction_trigger,
+            remote_store,
         );
         let compaction_handle = compaction_task.spawn();
         info!(

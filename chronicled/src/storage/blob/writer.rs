@@ -9,6 +9,8 @@ use super::ENTRY_HEADER_SIZE;
 pub struct BlobWriter {
     segment: Box<dyn Segment>,
     segment_id: u64,
+    entry_count: u64,
+    size: u64,
 }
 
 impl BlobWriter {
@@ -16,6 +18,8 @@ impl BlobWriter {
         Self {
             segment,
             segment_id,
+            entry_count: 0,
+            size: 0,
         }
     }
 
@@ -36,6 +40,9 @@ impl BlobWriter {
             .await
             .map_err(|e| UnitError::Storage(e.to_string()))?;
 
+        self.entry_count += 1;
+        self.size += total_len as u64;
+
         Ok((entry_start, total_len))
     }
 
@@ -49,6 +56,14 @@ impl BlobWriter {
 
     pub fn segment_id(&self) -> u64 {
         self.segment_id
+    }
+
+    pub fn entry_count(&self) -> u64 {
+        self.entry_count
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
     }
 }
 
@@ -81,6 +96,7 @@ mod tests {
         let (byte_offset, length) = {
             let mut writer = make_writer(&path, 1).await;
             let result = writer.write_entry(&event).await.unwrap();
+            assert_eq!(writer.entry_count(), 1);
             writer.finish().await.unwrap();
             result
         };
@@ -113,6 +129,7 @@ mod tests {
                 let (offset, len) = writer.write_entry(&event).await.unwrap();
                 entries.push((offset, len, i));
             }
+            assert_eq!(writer.entry_count(), 10);
             writer.finish().await.unwrap();
         }
 

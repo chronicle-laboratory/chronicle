@@ -49,6 +49,10 @@ async-stream = { workspace = true }
 handle = "1.0.2"
 memmap2 = { workspace = true }
 libc = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+aws-config = { workspace = true }
+bytes = { workspace = true }
+lru = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.8"

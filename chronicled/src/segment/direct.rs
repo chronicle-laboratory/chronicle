@@ -186,6 +186,11 @@ impl Segment for DirectSegment {
         .unwrap()
     }
 
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> Result<(), std::io::Error> {
+        use std::os::unix::fs::FileExt;
+        self.file.read_exact_at(buf, offset)
+    }
+
     fn offset(&self) -> u64 {
         self.write_offset
     }
