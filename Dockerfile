@@ -1,7 +1,9 @@
 # Chronicle Unit Dockerfile
 #   docker build -t chronicle-unit:dev .
 
-FROM rust:1.85
+FROM rust:1.92
+
+RUN apt-get update && apt-get install -y protobuf-compiler clang libclang-dev && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 

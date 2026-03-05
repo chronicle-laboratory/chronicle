@@ -26,9 +26,7 @@ spec:
           args:
             - |
               POD_DNS="$(hostname).{{ .Release.Name }}-headless.{{ .Release.Namespace }}.svc.cluster.local"
-              cat /etc/chronicle/chronicled.toml > /tmp/chronicled.toml
-              echo "" >> /tmp/chronicled.toml
-              echo "advertise_address = \"http://${POD_DNS}:7070\"" >> /tmp/chronicled.toml
+              sed "s/\[server\]/[server]\nadvertise_address = \"http:\/\/${POD_DNS}:7070\"/" /etc/chronicle/chronicled.toml > /tmp/chronicled.toml
               exec chronicle unit start --config /tmp/chronicled.toml
           ports:
             - containerPort: 7070

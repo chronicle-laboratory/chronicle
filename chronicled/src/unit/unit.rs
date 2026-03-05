@@ -221,11 +221,26 @@ impl Unit {
             address: address.clone(),
             status: UnitStatus::Writable.into(),
         };
-        catalog
-            .register_unit(&registration)
-            .await
-            .map_err(|e| UnitError::Unavailable(format!("catalog registration failed: {}", e)))?;
-        info!(address = %address, "unit registered in catalog");
+        // Retry registration — the Oxia client session may not be fully
+        // ready on first attempt after build().
+        let mut last_err = None;
+        for attempt in 0..10 {
+            match catalog.register_unit(&registration).await {
+                Ok(()) => {
+                    info!(address = %address, "unit registered in catalog");
+                    last_err = None;
+                    break;
+                }
+                Err(e) => {
+                    warn!(attempt, error = %e, "catalog registration failed, retrying");
+                    last_err = Some(e);
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                }
+            }
+        }
+        if let Some(e) = last_err {
+            return Err(UnitError::Unavailable(format!("catalog registration failed after retries: {}", e)));
+        }
 
         Ok(Self {
             context,

@@ -25,6 +25,9 @@ pub struct ChronicleConfig {
     /// Interval for refreshing the unit list from catalog.
     /// Defaults to 30 seconds. Set to None to disable.
     pub refresh_interval: Option<Duration>,
+    /// Pre-seed unit addresses to connect to directly.
+    /// If set, these are used instead of catalog discovery.
+    pub unit_addresses: Vec<String>,
 }
 
 /// Top-level client factory.
@@ -52,27 +55,38 @@ impl Chronicle {
             None => Arc::new(ClientMetrics::noop()),
         };
 
-        let registrations = catalog.list_units().await?;
-
         let mut unit_clients = HashMap::new();
-        for reg in &registrations {
-            if reg.status() == UnitStatus::Writable {
-                let client = UnitClient::connect(&reg.address).await?;
-                unit_clients.insert(reg.address.clone(), client);
-                info!(address = %reg.address, "connected to unit");
+        if !config.unit_addresses.is_empty() {
+            for addr in &config.unit_addresses {
+                let client = UnitClient::connect(addr).await?;
+                unit_clients.insert(addr.clone(), client);
+                info!(address = %addr, "connected to unit (pre-configured)");
+            }
+        } else {
+            let registrations = catalog.list_units().await?;
+            for reg in &registrations {
+                if reg.status() == UnitStatus::Writable {
+                    let client = UnitClient::connect(&reg.address).await?;
+                    unit_clients.insert(reg.address.clone(), client);
+                    info!(address = %reg.address, "connected to unit");
+                }
             }
         }
 
         let unit_clients = Arc::new(RwLock::new(unit_clients));
         let (cancel_tx, cancel_rx) = watch::channel(());
 
-        let interval = config.refresh_interval.unwrap_or(DEFAULT_REFRESH_INTERVAL);
-        let refresh_handle = {
+        // Skip background refresh when using pre-configured unit addresses,
+        // since catalog discovery is bypassed and would incorrectly remove them.
+        let refresh_handle = if config.unit_addresses.is_empty() {
+            let interval = config.refresh_interval.unwrap_or(DEFAULT_REFRESH_INTERVAL);
             let catalog = catalog.clone();
             let clients = unit_clients.clone();
-            tokio::spawn(async move {
+            Some(tokio::spawn(async move {
                 bg_refresh_units(catalog, clients, cancel_rx, interval).await;
-            })
+            }))
+        } else {
+            None
         };
 
         Ok(Self {
@@ -81,7 +95,7 @@ impl Chronicle {
             config,
             metrics,
             _cancel: cancel_tx,
-            _refresh_handle: Some(refresh_handle),
+            _refresh_handle: refresh_handle,
         })
     }
 

@@ -38,16 +38,15 @@ impl UnitClient {
     }
 
     async fn build_channel(endpoint: &str) -> Result<Channel, ChronicleError> {
-        Endpoint::from_shared(endpoint.to_string())
+        let channel = Endpoint::from_shared(endpoint.to_string())
             .map_err(|e| ChronicleError::Transport(format!("{}: {}", endpoint, e)))?
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
             .http2_keep_alive_interval(KEEP_ALIVE_INTERVAL)
             .keep_alive_timeout(KEEP_ALIVE_TIMEOUT)
             .keep_alive_while_idle(true)
-            .connect()
-            .await
-            .map_err(|e| ChronicleError::Transport(format!("{}: {}", endpoint, e)))
+            .connect_lazy();
+        Ok(channel)
     }
 
     pub fn endpoint(&self) -> &str {

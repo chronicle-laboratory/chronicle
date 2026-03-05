@@ -1,0 +1,27 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: chronicle-verify
+  namespace: chronicle
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: chronicle-verify
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: verify
+          image: chronicle-unit:dev
+          imagePullPolicy: IfNotPresent
+          command: ["chronicle", "verify"]
+          args:
+            - --catalog=memory
+            - --backend=memory
+            - --timelines=4
+            - --rate=100
+            - --replication-factor=3
+            - --payload-size=256
+            - --report-interval=5
+            - --units=http://chronicle-0.chronicle-headless.chronicle.svc.cluster.local:7070,http://chronicle-1.chronicle-headless.chronicle.svc.cluster.local:7070,http://chronicle-2.chronicle-headless.chronicle.svc.cluster.local:7070
