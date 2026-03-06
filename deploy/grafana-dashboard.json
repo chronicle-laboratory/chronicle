@@ -59,7 +59,7 @@
       "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
       "id": 4,
       "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "textMode": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
-      "targets": [{ "expr": "1 - (sum(rate(chronicle_server_write_errors_total[5m])) + sum(rate(chronicle_server_read_errors_total[5m]))) / clamp_min(sum(rate(chronicle_server_write_requests_total[5m])) + sum(rate(chronicle_server_read_requests_total[5m])), 1)", "legendFormat": "" }],
+      "targets": [{ "expr": "1 - (sum(rate(chronicle_server_write_errors_total[1m])) + sum(rate(chronicle_server_read_errors_total[1m]))) / clamp_min(sum(rate(chronicle_server_write_requests_total[1m])) + sum(rate(chronicle_server_read_requests_total[1m])), 1)", "legendFormat": "" }],
       "title": "Success Rate",
       "type": "stat"
     },
@@ -115,7 +115,7 @@
       "gridPos": { "h": 4, "w": 4, "x": 0, "y": 5 },
       "id": 7,
       "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
-      "targets": [{ "expr": "sum(rate(chronicle_server_write_requests_total[5m]))", "legendFormat": "" }],
+      "targets": [{ "expr": "sum(rate(chronicle_server_write_requests_total[1m]))", "legendFormat": "" }],
       "title": "Write Rate",
       "type": "stat"
     },
@@ -131,7 +131,7 @@
       "gridPos": { "h": 4, "w": 4, "x": 4, "y": 5 },
       "id": 8,
       "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
-      "targets": [{ "expr": "sum(rate(chronicle_server_read_requests_total[5m]))", "legendFormat": "" }],
+      "targets": [{ "expr": "sum(rate(chronicle_server_read_requests_total[1m]))", "legendFormat": "" }],
       "title": "Read Rate",
       "type": "stat"
     },
@@ -147,8 +147,10 @@
       "gridPos": { "h": 4, "w": 4, "x": 8, "y": 5 },
       "id": 9,
       "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
-      "targets": [{ "expr": "sum(chronicle_server_disk_usage_bytes)", "legendFormat": "" }],
-      "title": "Total Disk Usage",
+      "targets": [
+        { "expr": "sum(chronicle_server_disk_usage_bytes) by (component)", "legendFormat": "{{component}}" }
+      ],
+      "title": "Disk Usage",
       "type": "stat"
     },
 
@@ -803,7 +805,7 @@
       }
     ]
   },
-  "time": { "from": "now-1h", "to": "now" },
+  "time": { "from": "now-5m", "to": "now" },
   "timepicker": {},
   "timezone": "",
   "title": "Chronicle Unit",

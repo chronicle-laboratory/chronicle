@@ -277,19 +277,19 @@ fn dir_size(path: &str) -> u64 {
     total
 }
 
-/// Register disk usage gauge that reports total bytes used under data dirs.
+/// Register disk usage gauge that reports bytes used per data directory component.
+/// Each directory is tagged with a "component" label (wal, index, blob).
 /// The returned handle must be kept alive for the gauge to be reported.
-pub fn register_disk_usage_gauge(meter: &Meter, data_dirs: Vec<String>) -> ObservableGauge<u64> {
-    info!(dirs = ?data_dirs, "registering disk usage gauge");
+pub fn register_disk_usage_gauge(meter: &Meter, labeled_dirs: Vec<(String, String)>) -> ObservableGauge<u64> {
+    info!(dirs = ?labeled_dirs, "registering disk usage gauge");
     meter
         .u64_observable_gauge("chronicle.server.disk.usage_bytes")
-        .with_description("Total disk usage of data directories in bytes")
+        .with_description("Disk usage of data directories in bytes")
         .with_callback(move |observer| {
-            let mut total: u64 = 0;
-            for dir in &data_dirs {
-                total += dir_size(dir);
+            for (label, dir) in &labeled_dirs {
+                let bytes = dir_size(dir);
+                observer.observe(bytes, &[KeyValue::new("component", label.clone())]);
             }
-            observer.observe(total, &[]);
         })
         .build()
 }

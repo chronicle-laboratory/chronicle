@@ -78,9 +78,9 @@ impl Unit {
 
         let mut observable_gauges = observability::register_rocksdb_gauges(&meter, storage.clone());
         observable_gauges.push(observability::register_disk_usage_gauge(&meter, vec![
-            options.wal.dir.clone(),
-            options.storage.dir.clone(),
-            options.segments.dir.clone(),
+            ("wal".to_string(), options.wal.dir.clone()),
+            ("index".to_string(), options.storage.dir.clone()),
+            ("blob".to_string(), options.segments.dir.clone()),
         ]));
 
         let wal = Wal::new(WalOptions {
