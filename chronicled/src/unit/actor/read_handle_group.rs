@@ -1,5 +1,5 @@
-use crate::actor::Envelope;
-use crate::actor::read_handle_actor::ReadActor;
+use super::Envelope;
+use super::read_handle_actor::ReadActor;
 use crate::storage::level_iterator::LevelIterator;
 use chronicle_proto::pb_ext::{FetchEventsRequest, FetchEventsResponse};
 use tonic::Status;
