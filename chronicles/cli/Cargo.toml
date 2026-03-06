@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 libchronicle = { path = "../libchronicle" }
-chronicled = { path = "../../chronicled/unit" }
+chronicle-unit = { path = "../../chronicled/unit" }
 chronicle-saga = { path = "../../chronicled/saga" }
 catalog = { path = "../../catalog" }
 clap = { workspace = true }

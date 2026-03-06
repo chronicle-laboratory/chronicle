@@ -1,7 +1,7 @@
 use crate::banner;
 use crate::process;
-use chronicled::option::unit_options::UnitOptions;
-use chronicled::unit::unit::Unit;
+use chronicle_unit::option::unit_options::UnitOptions;
+use chronicle_unit::unit::unit::Unit;
 use tracing::{info, warn};
 use std::io::IsTerminal;
 use std::time::Duration;
