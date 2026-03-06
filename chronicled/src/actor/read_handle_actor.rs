@@ -48,16 +48,30 @@ impl ReadActor {
                     'envelope_loop: for envelope in inflight_read.drain(..) {
                         let request = envelope.request;
                         let e_offset = request.end_offset;
-                        let iter = reader.fetch_batches(
-                            request.timeline_id,
-                            request.start_offset,
-                            request.end_offset,
-                        );
+
+                        // Run blocking I/O (RocksDB scan + segment reads) off the async runtime.
+                        let reader_clone = reader.clone();
+                        let batches = match tokio::task::spawn_blocking(move || {
+                            reader_clone.fetch_batches(
+                                request.timeline_id,
+                                request.start_offset,
+                                request.end_offset,
+                            ).collect::<Vec<_>>()
+                        }).await {
+                            Ok(b) => b,
+                            Err(e) => {
+                                warn!(error = ?e, "spawn_blocking failed for read");
+                                let _ = envelope.res_tx.send(Err(
+                                    Status::internal("read task failed")
+                                )).await;
+                                continue 'envelope_loop;
+                            }
+                        };
 
                         let mut latest_advanced_offset = -1;
                         let mut sent_first = false;
 
-                        for (offset, advanced_offset, events) in iter {
+                        for (offset, advanced_offset, events) in batches {
                             latest_advanced_offset = advanced_offset;
                             let chunk_type = if offset != e_offset {
                                 if !sent_first {

@@ -24,7 +24,7 @@ use tokio::{sync, task};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-const BATCH_FLUSH_INTERVAL_MS: u64 = 10;
+const BATCH_FLUSH_INTERVAL_MS: u64 = 1;
 const MAX_BATCH_SIZE: usize = 512;
 const DEFAULT_MAX_SEGMENT_SIZE: u64 = 64 * 1024 * 1024; // 64MB per WAL segment
 
@@ -366,6 +366,17 @@ async fn bg_wal_writer(
                 let record = Record::new(data);
                 pending_batch.add(record);
                 pending_senders.push(offset_tx);
+
+                // Greedily drain all immediately available records before flushing.
+                while pending_batch.len() < MAX_BATCH_SIZE {
+                    match buf_rx.try_recv() {
+                        Ok((data, tx)) => {
+                            pending_batch.add(Record::new(data));
+                            pending_senders.push(tx);
+                        }
+                        Err(_) => break,
+                    }
+                }
 
                 if pending_batch.len() >= MAX_BATCH_SIZE {
                     let batch = std::mem::replace(&mut pending_batch, RecordBatch::new());

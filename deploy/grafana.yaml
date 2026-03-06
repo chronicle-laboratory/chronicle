@@ -26,10 +26,20 @@ spec:
           volumeMounts:
             - name: datasource
               mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboard-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
       volumes:
         - name: datasource
           configMap:
             name: grafana-datasource
+        - name: dashboard-provider
+          configMap:
+            name: grafana-dashboard-provider
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -45,6 +55,21 @@ data:
         access: proxy
         url: http://prometheus.chronicle.svc.cluster.local:9090
         isDefault: true
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: chronicle
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: chronicle
+        folder: Chronicle
+        type: file
+        options:
+          path: /var/lib/grafana/dashboards
 ---
 apiVersion: v1
 kind: Service
