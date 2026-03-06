@@ -7,6 +7,8 @@ metadata:
     app.kubernetes.io/instance: {{ .Release.Name }}
 data:
   chronicled.toml: |
+    io_mode = "{{ .Values.ioMode }}"
+
     [server]
     bind_address = "{{ .Values.server.bindAddress }}"
 

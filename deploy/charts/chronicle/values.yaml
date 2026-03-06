@@ -12,6 +12,8 @@ catalog:
   backend: oxia
   serviceAddress: "oxia:6648"
 
+ioMode: basic
+
 log:
   level: info
 
