@@ -1,3 +1,4 @@
+use chronicle_cli::saga::SagaAction;
 use chronicle_cli::unit::UnitAction;
 use chronicle_cli::verify::VerifyArgs;
 use clap::Parser;
@@ -16,6 +17,11 @@ enum Commands {
         #[command(subcommand)]
         action: UnitAction,
     },
+    /// Manage a saga (query engine) server
+    Saga {
+        #[command(subcommand)]
+        action: SagaAction,
+    },
     /// Run continuous verification against a live cluster
     Verify(VerifyArgs),
 }
@@ -26,6 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Unit { action } => chronicle_cli::unit::run(action).await?,
+        Commands::Saga { action } => chronicle_cli::saga::run(action).await?,
         Commands::Verify(args) => {
             tracing_subscriber::fmt()
                 .with_env_filter(
