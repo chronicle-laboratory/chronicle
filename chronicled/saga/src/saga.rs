@@ -1,11 +1,11 @@
 use crate::config::SagaConfig;
-use crate::consumer::Consumer;
-use crate::flusher::Flusher;
-use crate::lifecycle::Lifecycle;
-use crate::memtable::Memtable;
-use crate::merger::Merger;
-use crate::saga_catalog::SagaCatalog;
-use crate::server::{self, AppState};
+use crate::pipeline::source::Source;
+use crate::storage::flusher::Flusher;
+use crate::storage::lifecycle::Lifecycle;
+use crate::storage::memtable::Memtable;
+use crate::storage::merger::Merger;
+use crate::storage::saga_catalog::SagaCatalog;
+use crate::server::http::{self, AppState};
 use object_store::local::LocalFileSystem;
 use object_store::ObjectStore;
 use std::collections::HashMap;
@@ -54,7 +54,7 @@ impl Saga {
 
         // Consumer task.
         {
-            let consumer = Consumer::new(
+            let source = Source::new(
                 config.clone(),
                 catalog.clone(),
                 memtables.clone(),
@@ -62,8 +62,8 @@ impl Saga {
             );
             let rx = shutdown_rx.clone();
             handles.push(tokio::spawn(async move {
-                if let Err(e) = consumer.run(rx).await {
-                    error!(error = %e, "consumer task failed");
+                if let Err(e) = source.run(rx).await {
+                    error!(error = %e, "source task failed");
                 }
             }));
         }
@@ -160,7 +160,7 @@ impl Saga {
             let port = config.http_port;
             let mut rx = shutdown_rx.clone();
             handles.push(tokio::spawn(async move {
-                let app = server::build_router(state);
+                let app = http::build_router(state);
                 let addr = format!("0.0.0.0:{}", port);
                 info!(addr = %addr, "starting HTTP server");
                 let listener = match tokio::net::TcpListener::bind(&addr).await {

@@ -1,14 +1,13 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ .Release.Name }}
+  name: chronicle-unit
   labels:
-    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/name: chronicle-unit
     app.kubernetes.io/instance: {{ .Release.Name }}
 spec:
   selector:
-    app.kubernetes.io/name: {{ .Chart.Name }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: chronicle-unit
   ports:
     - port: 7070
       targetPort: 7070
@@ -20,15 +19,14 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ .Release.Name }}-headless
+  name: chronicle-unit-headless
   labels:
-    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/name: chronicle-unit
     app.kubernetes.io/instance: {{ .Release.Name }}
 spec:
   clusterIP: None
   selector:
-    app.kubernetes.io/name: {{ .Chart.Name }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: chronicle-unit
   ports:
     - port: 7070
       targetPort: 7070

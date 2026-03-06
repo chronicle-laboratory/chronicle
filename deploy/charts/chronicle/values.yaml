@@ -1,29 +1,43 @@
-replicaCount: 3
+unit:
+  replicaCount: 3
+  image:
+    repository: chronicle-unit
+    tag: dev
+    pullPolicy: IfNotPresent
+  server:
+    bindAddress: "0.0.0.0:7070"
+  ioMode: basic
+  storage:
+    size: 2Gi
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "1"
 
-image:
-  repository: chronicle-unit
-  tag: dev
-  pullPolicy: IfNotPresent
-
-server:
-  bindAddress: "0.0.0.0:7070"
+saga:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: chronicle-unit
+    tag: dev
+    pullPolicy: IfNotPresent
+  httpPort: 3000
+  storage:
+    size: 2Gi
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "1"
 
 catalog:
   backend: oxia
   serviceAddress: "oxia:6648"
 
-ioMode: basic
-
 log:
   level: info
-
-storage:
-  size: 2Gi
-
-resources:
-  requests:
-    memory: "256Mi"
-    cpu: "250m"
-  limits:
-    memory: "1Gi"
-    cpu: "1"

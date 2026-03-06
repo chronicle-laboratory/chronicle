@@ -24,4 +24,4 @@ spec:
             - --replication-factor=3
             - --payload-size=256
             - --report-interval=5
-            - --units=http://chronicle-0.chronicle-headless.chronicle.svc.cluster.local:7070,http://chronicle-1.chronicle-headless.chronicle.svc.cluster.local:7070,http://chronicle-2.chronicle-headless.chronicle.svc.cluster.local:7070
+            - --units=http://chronicle-unit-0.chronicle-unit-headless.chronicle.svc.cluster.local:7070,http://chronicle-unit-1.chronicle-unit-headless.chronicle.svc.cluster.local:7070,http://chronicle-unit-2.chronicle-unit-headless.chronicle.svc.cluster.local:7070

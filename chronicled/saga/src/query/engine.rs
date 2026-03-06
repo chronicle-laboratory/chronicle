@@ -1,6 +1,6 @@
 use crate::error::Result;
-use crate::memtable::Memtable;
-use crate::saga_catalog::SagaCatalog;
+use crate::storage::memtable::Memtable;
+use crate::storage::saga_catalog::SagaCatalog;
 use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
 use datafusion::catalog::{CatalogProvider, SchemaProvider};

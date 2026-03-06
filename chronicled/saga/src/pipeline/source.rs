@@ -1,9 +1,9 @@
 use crate::config::SagaConfig;
-use crate::decoder;
+use crate::pipeline::decoder;
 use crate::error::{Result, SagaError};
-use crate::lifecycle::Lifecycle;
-use crate::memtable::Memtable;
-use crate::saga_catalog::SagaCatalog;
+use crate::storage::lifecycle::Lifecycle;
+use crate::storage::memtable::Memtable;
+use crate::storage::saga_catalog::SagaCatalog;
 use chronicle_proto::pb_saga::segment_discovery_client::SegmentDiscoveryClient;
 use chronicle_proto::pb_saga::segment_reader_client::SegmentReaderClient;
 use chronicle_proto::pb_saga::{AckSegmentRequest, ListPendingRequest, ReadSegmentRequest};
@@ -12,15 +12,15 @@ use std::sync::Arc;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
-/// WAL consumer that pulls data via gRPC and writes into per-topic Memtables.
-pub struct Consumer {
+/// WAL source that pulls data via gRPC and writes into per-topic Memtables.
+pub struct Source {
     config: SagaConfig,
     catalog: Arc<SagaCatalog>,
     memtables: Arc<parking_lot::RwLock<HashMap<String, Arc<Memtable>>>>,
     lifecycle: Arc<Lifecycle>,
 }
 
-impl Consumer {
+impl Source {
     pub fn new(
         config: SagaConfig,
         catalog: Arc<SagaCatalog>,
@@ -35,10 +35,10 @@ impl Consumer {
         }
     }
 
-    /// Run the consumer loop until shutdown signal.
+    /// Run the source loop until shutdown signal.
     pub async fn run(&self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
         let endpoint = self.config.wal_endpoint.clone();
-        info!(endpoint = %endpoint, "starting WAL consumer");
+        info!(endpoint = %endpoint, "starting WAL source");
 
         let poll_interval =
             tokio::time::Duration::from_millis(self.config.wal_poll_interval_ms);
@@ -46,12 +46,12 @@ impl Consumer {
         loop {
             tokio::select! {
                 _ = shutdown.changed() => {
-                    info!("consumer received shutdown signal");
+                    info!("source received shutdown signal");
                     return Ok(());
                 }
                 _ = tokio::time::sleep(poll_interval) => {
                     if let Err(e) = self.poll_once(&endpoint).await {
-                        warn!(error = %e, "consumer poll failed");
+                        warn!(error = %e, "source poll failed");
                     }
                 }
             }
@@ -169,11 +169,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn consumer_new() {
+    fn source_new() {
         let config = SagaConfig::default();
         let catalog = Arc::new(SagaCatalog::new());
         let memtables = Arc::new(parking_lot::RwLock::new(HashMap::new()));
         let lifecycle = Arc::new(Lifecycle::new(std::path::PathBuf::from("/tmp/test.json")));
-        let _consumer = Consumer::new(config, catalog, memtables, lifecycle);
+        let _source = Source::new(config, catalog, memtables, lifecycle);
     }
 }

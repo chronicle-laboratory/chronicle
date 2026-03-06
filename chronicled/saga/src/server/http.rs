@@ -1,7 +1,7 @@
 use crate::config::SagaConfig;
-use crate::memtable::Memtable;
-use crate::query;
-use crate::saga_catalog::SagaCatalog;
+use crate::storage::memtable::Memtable;
+use crate::query::engine;
+use crate::storage::saga_catalog::SagaCatalog;
 use crate::types::TopicConfig;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -101,7 +101,7 @@ async fn execute_query(
     State(state): State<AppState>,
     Json(req): Json<QueryRequest>,
 ) -> impl IntoResponse {
-    match query::execute_sql(&req.sql, &state.catalog, &state.memtables).await {
+    match engine::execute_sql(&req.sql, &state.catalog, &state.memtables).await {
         Ok(batches) => {
             let (columns, rows) = batches_to_json(&batches);
             let row_count = rows.len();

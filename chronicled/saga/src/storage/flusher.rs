@@ -1,7 +1,7 @@
 use crate::config::SagaConfig;
 use crate::error::Result;
-use crate::memtable::FrozenBuffer;
-use crate::saga_catalog::SagaCatalog;
+use crate::storage::memtable::FrozenBuffer;
+use crate::storage::saga_catalog::SagaCatalog;
 use crate::types::L0FileMeta;
 use arrow::array::RecordBatch;
 use arrow::compute::{concat_batches, sort_to_indices, take};
