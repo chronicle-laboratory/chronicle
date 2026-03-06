@@ -1,6 +1,6 @@
-use super::admin_service::{AdminService, STATE_WRITABLE, STATE_READONLY};
-use super::actor::read_handle_group::ReadHandleGroup;
-use super::actor::write_handle_group::WriteActorGroup;
+use crate::unit::admin_service::{AdminService, STATE_WRITABLE, STATE_READONLY};
+use crate::actor::read_handle_group::ReadHandleGroup;
+use crate::actor::write_handle_group::WriteActorGroup;
 use crate::error::unit_error::UnitError;
 use crate::observability::{self, ServerMetrics};
 use crate::option::auto_config::{AutoConfig, SystemEnv};
