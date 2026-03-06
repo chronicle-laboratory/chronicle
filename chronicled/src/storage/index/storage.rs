@@ -5,6 +5,7 @@ use std::sync::Arc;
 use rocksdb::{
     BlockBasedOptions, Cache, DB, DBCompressionType, LogLevel, Options, SliceTransform,
     WriteBatch, WriteOptions,
+    statistics::Ticker,
 };
 
 use crate::error::unit_error::UnitError;
@@ -32,6 +33,7 @@ fn decode_segment_meta_key(key: &[u8]) -> Option<u64> {
 pub(crate) struct Inner {
     pub database: DB,
     pub write_options: WriteOptions,
+    pub db_options: Options,
 }
 
 #[derive(Clone)]
@@ -61,6 +63,7 @@ impl Storage {
         db_options.create_if_missing(true);
         db_options.set_log_level(LogLevel::Info);
         db_options.set_keep_log_file_num(10);
+        db_options.enable_statistics();
 
         // Index is rebuildable from segment files — WAL is unnecessary write amplification.
         db_options.set_manual_wal_flush(true);
@@ -100,7 +103,7 @@ impl Storage {
         write_options.disable_wal(true);
 
         Ok(Storage {
-            inner: Arc::new(Inner { database: db, write_options }),
+            inner: Arc::new(Inner { database: db, write_options, db_options }),
         })
     }
 
@@ -114,10 +117,14 @@ impl Storage {
             let value = entry.encode();
             batch.put(key, value);
         }
-        self.inner
+        let result = self.inner
             .database
             .write_opt(batch, &self.inner.write_options)
-            .map_err(|e| UnitError::Storage(e.to_string()))
+            .map_err(|e| UnitError::Storage(e.to_string()));
+        if let Some(m) = crate::observability::global_metrics() {
+            m.index_writes.add(entries.len() as u64, &[]);
+        }
+        result
     }
 
     pub fn delete_index_batch(
@@ -179,6 +186,9 @@ impl Storage {
                 }
                 Err(_) => break,
             }
+        }
+        if let Some(m) = crate::observability::global_metrics() {
+            m.index_reads.add(1, &[]);
         }
         results
     }
@@ -265,6 +275,11 @@ impl Storage {
     /// Retrieve a raw value by key.
     pub fn get_raw(&self, key: &[u8]) -> Option<Vec<u8>> {
         self.inner.database.get(key).ok().flatten()
+    }
+
+    /// Get a RocksDB ticker value.
+    pub fn ticker(&self, ticker: Ticker) -> u64 {
+        self.inner.db_options.get_ticker_count(ticker)
     }
 
     /// Retrieve all segment metadata entries as (segment_id, raw_value).

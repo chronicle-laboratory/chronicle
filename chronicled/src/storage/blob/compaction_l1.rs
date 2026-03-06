@@ -59,6 +59,7 @@ impl L1FlushTask {
             return Ok(());
         }
 
+        let flush_start = std::time::Instant::now();
         let entries_count = sealed.index.len();
 
         let mut writer = self.segment_manager.new_writer_at_level(1).await?;
@@ -107,6 +108,12 @@ impl L1FlushTask {
                     _ => {}
                 }
             }
+        }
+
+        if let Some(m) = crate::observability::global_metrics() {
+            m.record_compaction(1, flush_start.elapsed().as_secs_f64(), 0, size);
+            m.record_segment_change(1, 1, size as i64);
+            m.write_cache_seals.add(1, &[]);
         }
 
         info!(segment_id = segment_id, entries = entries_count, "L1 flush complete");

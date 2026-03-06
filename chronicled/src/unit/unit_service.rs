@@ -1,6 +1,7 @@
 use crate::actor::Envelope;
 use crate::actor::read_handle_group::ReadHandleGroup;
 use crate::actor::write_handle_group::WriteActorGroup;
+use crate::observability::ServerMetrics;
 use crate::unit::admin_service::STATE_READONLY;
 use crate::unit::timeline_state::TimelineStateManager;
 use chronicle_proto::pb_ext::chronicle_server::Chronicle;
@@ -11,6 +12,7 @@ use chronicle_proto::pb_ext::{
 use futures_util::StreamExt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::codegen::BoxStream;
@@ -21,6 +23,7 @@ pub struct UnitService {
     read_group: Arc<ReadHandleGroup>,
     timeline_state: Arc<TimelineStateManager>,
     unit_state: Arc<AtomicU8>,
+    metrics: Arc<ServerMetrics>,
 }
 
 impl UnitService {
@@ -29,12 +32,14 @@ impl UnitService {
         read_group: Arc<ReadHandleGroup>,
         timeline_state: Arc<TimelineStateManager>,
         unit_state: Arc<AtomicU8>,
+        metrics: Arc<ServerMetrics>,
     ) -> Self {
         Self {
             write_group,
             read_group,
             timeline_state,
             unit_state,
+            metrics,
         }
     }
 }
@@ -55,18 +60,26 @@ impl Chronicle for UnitService {
         let mut stream = request.into_inner();
         let (tx, rx) = mpsc::channel(4);
         let write_group = self.write_group.clone();
+        let metrics = self.metrics.clone();
 
         tokio::spawn(async move {
             while let Some(request) = stream.next().await {
                 match request {
                     Ok(req) => {
                         for item in req.items {
+                            let start = Instant::now();
+                            metrics.write_requests.add(1, &[]);
+                            let payload_len = item.event.as_ref()
+                                .and_then(|e| e.payload.as_ref())
+                                .map_or(0, |p| p.len() as u64);
+
                             let (item_tx, mut item_rx) = mpsc::channel(1);
                             let envelope = Envelope {
                                 request: item,
                                 res_tx: item_tx,
                             };
                             if let Err(_e) = write_group.dispatch(envelope).await {
+                                metrics.write_errors.add(1, &[]);
                                 let response = RecordEventsResponse {
                                     items: vec![RecordEventsResponseItem {
                                         code: StatusCode::InvalidTerm.into(),
@@ -82,6 +95,8 @@ impl Chronicle for UnitService {
                             if let Some(result) = item_rx.recv().await {
                                 match result {
                                     Ok(event) => {
+                                        metrics.write_latency.record(start.elapsed().as_secs_f64(), &[]);
+                                        metrics.write_bytes.add(payload_len, &[]);
                                         let response = RecordEventsResponse {
                                             items: vec![RecordEventsResponseItem {
                                                 code: StatusCode::Ok.into(),
@@ -93,6 +108,7 @@ impl Chronicle for UnitService {
                                         }
                                     }
                                     Err(status) => {
+                                        metrics.write_errors.add(1, &[]);
                                         if tx.send(Err(status)).await.is_err() {
                                             return;
                                         }
@@ -123,28 +139,39 @@ impl Chronicle for UnitService {
         let mut stream = request.into_inner();
         let (tx, rx) = mpsc::channel(4);
         let read_group = self.read_group.clone();
+        let metrics = self.metrics.clone();
 
         tokio::spawn(async move {
             while let Some(request) = stream.next().await {
                 match request {
                     Ok(req) => {
+                        let start = Instant::now();
+                        metrics.read_requests.add(1, &[]);
+
                         let (item_tx, mut item_rx) = mpsc::channel(16);
                         let envelope = Envelope {
                             request: req,
                             res_tx: item_tx,
                         };
                         if let Err(e) = read_group.dispatch(envelope).await {
+                            metrics.read_errors.add(1, &[]);
                             if tx.send(Err(e)).await.is_err() {
                                 return;
                             }
                             continue;
                         }
                         // Forward actor responses
+                        let mut event_count = 0u64;
                         while let Some(result) = item_rx.recv().await {
+                            if let Ok(ref resp) = result {
+                                event_count += resp.event.len() as u64;
+                            }
                             if tx.send(result).await.is_err() {
                                 return;
                             }
                         }
+                        metrics.read_latency.record(start.elapsed().as_secs_f64(), &[]);
+                        metrics.read_events.add(event_count, &[]);
                     }
                     Err(e) => {
                         if tx.send(Err(e)).await.is_err() {

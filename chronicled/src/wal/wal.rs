@@ -415,8 +415,14 @@ async fn flush_batch(
         }
     }
 
+    let encoded_len = encoded.len();
     match state.current_segment.write(&encoded).await {
         Ok(base_offset) => {
+            if let Some(m) = crate::observability::global_metrics() {
+                m.wal_writes.add(1, &[]);
+                m.wal_bytes.add(encoded_len as u64, &[]);
+            }
+
             let global_base = state.global_offset(base_offset);
 
             let mut current_offset = global_base;
@@ -427,7 +433,7 @@ async fn flush_batch(
                 current_offset += *size as i64;
             }
 
-            let final_offset = global_base + encoded.len() as i64;
+            let final_offset = global_base + encoded_len as i64;
             if advanced_offset_tx.send(final_offset).is_err() {
                 warn!("no active subscriber for advanced offset");
             }
@@ -447,7 +453,11 @@ async fn bg_wal_syncer(
         match advanced_offset_rx.changed().await {
             Ok(_) => {
                 let advanced_offset = *advanced_offset_rx.borrow();
+                let start = std::time::Instant::now();
                 inner.sync_data().await;
+                if let Some(m) = crate::observability::global_metrics() {
+                    m.wal_sync_latency.record(start.elapsed().as_secs_f64(), &[]);
+                }
                 if let Err(err) = synced_offset_tx.send(advanced_offset) {
                     warn!(error = ?err, "no active subscriber for synced offset");
                 }

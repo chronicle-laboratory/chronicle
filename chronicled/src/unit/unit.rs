@@ -63,7 +63,8 @@ impl Unit {
         let auto = AutoConfig::from_env_with_io(&env, options.io_mode);
 
         let (meter_provider, meter, prometheus_registry) = observability::init_meter_provider();
-        let _metrics = Arc::new(ServerMetrics::new(&meter));
+        let metrics = Arc::new(ServerMetrics::new(&meter));
+        observability::set_global_metrics(metrics.clone());
 
         let resolved_compaction = options.compaction.resolve(&auto);
         let resolved_index = options.index.resolve(&auto);
@@ -73,6 +74,8 @@ impl Unit {
             index: Some(resolved_index),
         })?;
         info!(path = %options.storage.dir, "storage index opened");
+
+        observability::register_rocksdb_gauges(&meter, storage.clone());
 
         let wal = Wal::new(WalOptions {
             dir: options.wal.dir.clone(),
@@ -185,7 +188,7 @@ impl Unit {
 
         let unit_state = Arc::new(AtomicU8::new(STATE_WRITABLE));
 
-        let unit_service = UnitService::new(write_group, read_group, timeline_state.clone(), unit_state.clone());
+        let unit_service = UnitService::new(write_group, read_group, timeline_state.clone(), unit_state.clone(), metrics);
 
         let admin_service = AdminService {
             wal: wal.clone(),

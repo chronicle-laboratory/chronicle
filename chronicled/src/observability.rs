@@ -1,8 +1,23 @@
+use std::sync::OnceLock;
+use std::sync::Arc;
+
 use opentelemetry::metrics::{Counter, Histogram, Meter, MeterProvider, UpDownCounter};
 use opentelemetry::KeyValue;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use prometheus::Registry;
 use tracing::info;
+
+static GLOBAL_METRICS: OnceLock<Arc<ServerMetrics>> = OnceLock::new();
+
+/// Set the global metrics instance (called once during unit init).
+pub fn set_global_metrics(metrics: Arc<ServerMetrics>) {
+    let _ = GLOBAL_METRICS.set(metrics);
+}
+
+/// Get the global metrics instance. Returns None if not yet initialized.
+pub fn global_metrics() -> Option<&'static Arc<ServerMetrics>> {
+    GLOBAL_METRICS.get()
+}
 
 /// Server-side metrics for chronicled.
 #[derive(Clone)]
@@ -157,6 +172,32 @@ impl ServerMetrics {
         let attrs = [KeyValue::new("level", level as i64)];
         self.segment_count.add(count_delta, &attrs);
         self.segment_bytes.add(bytes_delta, &attrs);
+    }
+}
+
+/// Register RocksDB ticker gauges that are polled on each Prometheus scrape.
+pub fn register_rocksdb_gauges(meter: &Meter, storage: crate::storage::index::Storage) {
+    use rocksdb::statistics::Ticker;
+
+    let tickers: Vec<(Ticker, &str, &str)> = vec![
+        (Ticker::BlockCacheHit, "chronicle.rocksdb.block_cache.hits", "Block cache hits"),
+        (Ticker::BlockCacheMiss, "chronicle.rocksdb.block_cache.misses", "Block cache misses"),
+        (Ticker::BytesWritten, "chronicle.rocksdb.bytes_written", "Total bytes written to DB"),
+        (Ticker::BytesRead, "chronicle.rocksdb.bytes_read", "Total bytes read from DB"),
+        (Ticker::CompactReadBytes, "chronicle.rocksdb.compact.read_bytes", "RocksDB compaction read bytes"),
+        (Ticker::CompactWriteBytes, "chronicle.rocksdb.compact.write_bytes", "RocksDB compaction write bytes"),
+        (Ticker::BloomFilterUseful, "chronicle.rocksdb.bloom.useful", "Bloom filter useful (avoided reads)"),
+    ];
+
+    for (ticker, name, desc) in tickers {
+        let s = storage.clone();
+        let _gauge = meter
+            .u64_observable_gauge(name)
+            .with_description(desc)
+            .with_callback(move |observer| {
+                observer.observe(s.ticker(ticker), &[]);
+            })
+            .build();
     }
 }
 

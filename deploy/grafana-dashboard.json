@@ -1,0 +1,212 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "chronicle-unit",
+    "title": "Chronicle Unit",
+    "tags": ["chronicle"],
+    "timezone": "browser",
+    "refresh": "10s",
+    "time": { "from": "now-30m", "to": "now" },
+    "templating": {
+      "list": [
+        {
+          "name": "instance",
+          "type": "query",
+          "datasource": { "uid": "PBFA97CFB590B2093" },
+          "query": "label_values(chronicle_server_write_requests_total, instance)",
+          "multi": true,
+          "includeAll": true,
+          "current": { "text": "All", "value": "$__all" },
+          "refresh": 2
+        }
+      ]
+    },
+    "panels": [
+      {
+        "title": "Write Requests / sec",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 0 },
+        "datasource": { "uid": "PBFA97CFB590B2093" },
+        "targets": [{ "expr": "rate(chronicle_server_write_requests_total{instance=~\"$instance\"}[1m])", "legendFormat": "{{instance}}" }],
+        "fieldConfig": { "defaults": { "unit": "reqps" } }
+      },
+      {
+        "title": "Write Errors / sec",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 0 },
+        "datasource": { "uid": "PBFA97CFB590B2093" },
+        "targets": [{ "expr": "rate(chronicle_server_write_errors_total{instance=~\"$instance\"}[1m])", "legendFormat": "{{instance}}" }],
+        "fieldConfig": { "defaults": { "unit": "reqps", "color": { "mode": "fixed", "fixedColor": "red" } } }
+      },
+      {
+        "title": "Write Latency p50 / p99",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 },
+        "datasource": { "uid": "PBFA97CFB590B2093" },
+        "targets": [
+          { "expr": "histogram_quantile(0.50, rate(chronicle_server_write_latency_seconds_bucket{instance=~\"$instance\"}[1m]))", "legendFormat": "p50 {{instance}}" },
+          { "expr": "histogram_quantile(0.99, rate(chronicle_server_write_latency_seconds_bucket{instance=~\"$instance\"}[1m]))", "legendFormat": "p99 {{instance}}" }
+        ],
+        "fieldConfig": { "defaults": { "unit": "s" } }
+      },
+      {
+        "title": "Write Throughput",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+        "datasource": { "uid": "PBFA97CFB590B2093" },
+        "targets": [{ "expr": "rate(chronicle_server_write_bytes_total{instance=~\"$instance\"}[1m])", "legendFormat": "{{instance}}" }],
+        "fieldConfig": { "defaults": { "unit": "Bps" } }
+      },
+      {
+        "title": "Read Requests / sec",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
+        "datasource": { "uid": "PBFA97CFB590B2093" },
+        "targets": [{ "expr": "rate(chronicle_server_read_requests_total{instance=~\"$instance\"}[1m])", "legendFormat": "{{instance}}" }],
+        "fieldConfig": { "defaults": { "unit": "reqps" } }
+      },
+      {
+        "title": "Read Events / sec",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
+        "datasource": { "uid": "PBFA97CFB590B2093" },
+        "targets": [{ "expr": "rate(chronicle_server_read_events_total{instance=~\"$instance\"}[1m])", "legendFormat": "{{instance}}" }],
+        "fieldConfig": { "defaults": { "unit": "evtps" } }
+      },
+      {
+        "title": "Read Latency p50 / p99",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 16 },
+        "datasource": { "uid": "PBFA97CFB590B2093" },
+        "targets": [
+          { "expr": "histogram_quantile(0.50, rate(chronicle_server_read_latency_seconds_bucket{instance=~\"$instance\"}[1m]))", "legendFormat": "p50 {{instance}}" },
+          { "expr": "histogram_quantile(0.99, rate(chronicle_server_read_latency_seconds_bucket{instance=~\"$instance\"}[1m]))", "legendFormat": "p99 {{instance}}" }
+        ],
+        "fieldConfig": { "defaults": { "unit": "s" } }
+      },
+      {
+        "title": "WAL Writes / sec",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 16 },
+        "datasource": { "uid": "PBFA97CFB590B2093" },
+        "targets": [{ "expr": "rate(chronicle_server_wal_writes_total{instance=~\"$instance\"}[1m])", "legendFormat": "{{instance}}" }],
+        "fieldConfig": { "defaults": { "unit": "wps" } }
+      },
+      {
+        "title": "WAL Throughput",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 16 },
+        "datasource": { "uid": "PBFA97CFB590B2093" },
+        "targets": [{ "expr": "rate(chronicle_server_wal_bytes_total{instance=~\"$instance\"}[1m])", "legendFormat": "{{instance}}" }],
+        "fieldConfig": { "defaults": { "unit": "Bps" } }
+      },
+      {
+        "title": "WAL Sync Latency p50 / p99",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 24 },
+        "datasource": { "uid": "PBFA97CFB590B2093" },
+        "targets": [
+          { "expr": "histogram_quantile(0.50, rate(chronicle_server_wal_sync_latency_seconds_bucket{instance=~\"$instance\"}[1m]))", "legendFormat": "p50 {{instance}}" },
+          { "expr": "histogram_quantile(0.99, rate(chronicle_server_wal_sync_latency_seconds_bucket{instance=~\"$instance\"}[1m]))", "legendFormat": "p99 {{instance}}" }
+        ],
+        "fieldConfig": { "defaults": { "unit": "s" } }
+      },
+      {
+        "title": "Write Cache Entries",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 24 },
+        "datasource": { "uid": "PBFA97CFB590B2093" },
+        "targets": [{ "expr": "chronicle_server_write_cache_entries{instance=~\"$instance\"}", "legendFormat": "{{instance}}" }],
+        "fieldConfig": { "defaults": { "unit": "short" } }
+      },
+      {
+        "title": "Write Cache Seals / sec",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 24 },
+        "datasource": { "uid": "PBFA97CFB590B2093" },
+        "targets": [{ "expr": "rate(chronicle_server_write_cache_seals_total{instance=~\"$instance\"}[1m])", "legendFormat": "{{instance}}" }],
+        "fieldConfig": { "defaults": { "unit": "ops" } }
+      },
+      {
+        "title": "Compaction Runs / sec",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 32 },
+        "datasource": { "uid": "PBFA97CFB590B2093" },
+        "targets": [{ "expr": "rate(chronicle_server_compaction_runs_total{instance=~\"$instance\"}[1m])", "legendFormat": "L{{level}} {{instance}}" }],
+        "fieldConfig": { "defaults": { "unit": "ops" } }
+      },
+      {
+        "title": "Compaction Latency p99",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 32 },
+        "datasource": { "uid": "PBFA97CFB590B2093" },
+        "targets": [{ "expr": "histogram_quantile(0.99, rate(chronicle_server_compaction_latency_seconds_bucket{instance=~\"$instance\"}[5m]))", "legendFormat": "p99 L{{level}} {{instance}}" }],
+        "fieldConfig": { "defaults": { "unit": "s" } }
+      },
+      {
+        "title": "Segment Count by Level",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 32 },
+        "datasource": { "uid": "PBFA97CFB590B2093" },
+        "targets": [{ "expr": "chronicle_server_segments_count{instance=~\"$instance\"}", "legendFormat": "L{{level}} {{instance}}" }],
+        "fieldConfig": { "defaults": { "unit": "short" } }
+      },
+      {
+        "title": "Index Reads / sec",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 40 },
+        "datasource": { "uid": "PBFA97CFB590B2093" },
+        "targets": [{ "expr": "rate(chronicle_server_index_reads_total{instance=~\"$instance\"}[1m])", "legendFormat": "{{instance}}" }],
+        "fieldConfig": { "defaults": { "unit": "ops" } }
+      },
+      {
+        "title": "Index Writes / sec",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 40 },
+        "datasource": { "uid": "PBFA97CFB590B2093" },
+        "targets": [{ "expr": "rate(chronicle_server_index_writes_total{instance=~\"$instance\"}[1m])", "legendFormat": "{{instance}}" }],
+        "fieldConfig": { "defaults": { "unit": "ops" } }
+      },
+      {
+        "title": "RocksDB Block Cache Hit Rate",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 40 },
+        "datasource": { "uid": "PBFA97CFB590B2093" },
+        "targets": [{ "expr": "rate(chronicle_rocksdb_block_cache_hits{instance=~\"$instance\"}[1m]) / (rate(chronicle_rocksdb_block_cache_hits{instance=~\"$instance\"}[1m]) + rate(chronicle_rocksdb_block_cache_misses{instance=~\"$instance\"}[1m]))", "legendFormat": "{{instance}}" }],
+        "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } }
+      },
+      {
+        "title": "RocksDB Bytes Read / Written",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 48 },
+        "datasource": { "uid": "PBFA97CFB590B2093" },
+        "targets": [
+          { "expr": "rate(chronicle_rocksdb_bytes_read{instance=~\"$instance\"}[1m])", "legendFormat": "read {{instance}}" },
+          { "expr": "rate(chronicle_rocksdb_bytes_written{instance=~\"$instance\"}[1m])", "legendFormat": "written {{instance}}" }
+        ],
+        "fieldConfig": { "defaults": { "unit": "Bps" } }
+      },
+      {
+        "title": "RocksDB Compaction IO",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 48 },
+        "datasource": { "uid": "PBFA97CFB590B2093" },
+        "targets": [
+          { "expr": "rate(chronicle_rocksdb_compact_read_bytes{instance=~\"$instance\"}[1m])", "legendFormat": "read {{instance}}" },
+          { "expr": "rate(chronicle_rocksdb_compact_write_bytes{instance=~\"$instance\"}[1m])", "legendFormat": "write {{instance}}" }
+        ],
+        "fieldConfig": { "defaults": { "unit": "Bps" } }
+      },
+      {
+        "title": "RocksDB Bloom Filter Useful / sec",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 48 },
+        "datasource": { "uid": "PBFA97CFB590B2093" },
+        "targets": [{ "expr": "rate(chronicle_rocksdb_bloom_useful{instance=~\"$instance\"}[1m])", "legendFormat": "{{instance}}" }],
+        "fieldConfig": { "defaults": { "unit": "ops" } }
+      }
+    ],
+    "schemaVersion": 39
+  },
+  "overwrite": true
+}
