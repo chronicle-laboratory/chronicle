@@ -10,3 +10,6 @@ pub mod pb_catalog {
 pub mod pb_admin {
     tonic::include_proto!("io.chronicle.proto.admin.v1");
 }
+pub mod pb_saga {
+    tonic::include_proto!("io.chronicle.proto.saga.v1");
+}

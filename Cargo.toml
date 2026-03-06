@@ -52,3 +52,12 @@ aws-config = { version = "1.6.3", features = ["behavior-version-latest"] }
 bytes = "1.10"
 lru = "0.14"
 sysinfo = { version = "0.34", default-features = false, features = ["system"] }
+arrow = { version = "53", features = ["prettyprint"] }
+parquet = { version = "53", features = ["arrow", "zstd", "lz4", "snap"] }
+datafusion = "44"
+object_store = { version = "0.11", features = ["aws"] }
+parking_lot = "0.12"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+url = "2"
+tower-http = { version = "0.6", features = ["cors"] }

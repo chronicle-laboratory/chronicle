@@ -12,6 +12,7 @@ fn main() {
                 "pb_storage.proto",
                 "pb_catalog.proto",
                 "pb_admin.proto",
+                "pb_saga.proto",
             ],
             &[""],
         )

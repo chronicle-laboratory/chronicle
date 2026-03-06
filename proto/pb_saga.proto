@@ -1,0 +1,71 @@
+syntax = "proto3";
+
+package io.chronicle.proto.saga.v1;
+
+message FieldValue {
+  oneof value {
+    int64  int_value    = 1;
+    double float_value  = 2;
+    string string_value = 3;
+    int64  timestamp_ms = 4;
+    bool   bool_value   = 5;
+    bytes  bytes_value  = 6;
+  }
+  bool is_null = 7;
+}
+
+message Row {
+  repeated FieldValue fields = 1;
+}
+
+message SegmentMeta {
+  uint64 sequence_id   = 1;
+  string s3_path       = 2;
+  uint64 row_count     = 3;
+  uint64 size_bytes    = 4;
+  uint64 created_at_ms = 5;
+  string schema_id     = 6;
+}
+
+service SegmentDiscovery {
+  rpc ListPendingSegments(ListPendingRequest) returns (ListPendingResponse);
+  rpc AckSegment(AckSegmentRequest) returns (AckSegmentResponse);
+  rpc GetWatermark(GetWatermarkRequest) returns (GetWatermarkResponse);
+}
+
+message ListPendingRequest {
+  uint64 after_sequence_id = 1;
+  uint32 limit = 2;
+}
+
+message ListPendingResponse {
+  repeated SegmentMeta segments = 1;
+}
+
+message AckSegmentRequest {
+  uint64 sequence_id = 1;
+}
+
+message AckSegmentResponse {
+  bool success = 1;
+}
+
+message GetWatermarkRequest {}
+
+message GetWatermarkResponse {
+  uint64 latest_sequence_id = 1;
+}
+
+service SegmentReader {
+  rpc ReadSegment(ReadSegmentRequest) returns (stream ReadSegmentResponse);
+}
+
+message ReadSegmentRequest {
+  uint64 sequence_id = 1;
+  uint32 batch_size = 2;
+}
+
+message ReadSegmentResponse {
+  repeated Row rows = 1;
+  bool is_last_batch = 2;
+}
