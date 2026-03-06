@@ -1,212 +1,812 @@
 {
-  "dashboard": {
-    "id": null,
-    "uid": "chronicle-unit",
-    "title": "Chronicle Unit",
-    "tags": ["chronicle"],
-    "timezone": "browser",
-    "refresh": "10s",
-    "time": { "from": "now-30m", "to": "now" },
-    "templating": {
-      "list": [
-        {
-          "name": "instance",
-          "type": "query",
-          "datasource": { "uid": "PBFA97CFB590B2093" },
-          "query": "label_values(chronicle_server_write_requests_total, instance)",
-          "multi": true,
-          "includeAll": true,
-          "current": { "text": "All", "value": "$__all" },
-          "refresh": 2
-        }
-      ]
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "Health",
+      "type": "row"
     },
-    "panels": [
-      {
-        "title": "Write Requests / sec",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 0 },
-        "datasource": { "uid": "PBFA97CFB590B2093" },
-        "targets": [{ "expr": "rate(chronicle_server_write_requests_total{instance=~\"$instance\"}[1m])", "legendFormat": "{{instance}}" }],
-        "fieldConfig": { "defaults": { "unit": "reqps" } }
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "steps": [{ "color": "green", "value": null }] },
+          "mappings": []
+        }
       },
-      {
-        "title": "Write Errors / sec",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 0 },
-        "datasource": { "uid": "PBFA97CFB590B2093" },
-        "targets": [{ "expr": "rate(chronicle_server_write_errors_total{instance=~\"$instance\"}[1m])", "legendFormat": "{{instance}}" }],
-        "fieldConfig": { "defaults": { "unit": "reqps", "color": { "mode": "fixed", "fixedColor": "red" } } }
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "id": 2,
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "textMode": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [{ "expr": "count(up{job=\"chronicle\"} == 1)", "legendFormat": "" }],
+      "title": "Healthy Units",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "steps": [{ "color": "red", "value": null }] },
+          "mappings": []
+        }
       },
-      {
-        "title": "Write Latency p50 / p99",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 },
-        "datasource": { "uid": "PBFA97CFB590B2093" },
-        "targets": [
-          { "expr": "histogram_quantile(0.50, rate(chronicle_server_write_latency_seconds_bucket{instance=~\"$instance\"}[1m]))", "legendFormat": "p50 {{instance}}" },
-          { "expr": "histogram_quantile(0.99, rate(chronicle_server_write_latency_seconds_bucket{instance=~\"$instance\"}[1m]))", "legendFormat": "p99 {{instance}}" }
-        ],
-        "fieldConfig": { "defaults": { "unit": "s" } }
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "id": 3,
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "textMode": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [{ "expr": "count(up{job=\"chronicle\"} == 0) or vector(0)", "legendFormat": "" }],
+      "title": "Unhealthy Units",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "percentunit",
+          "min": 0, "max": 1,
+          "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "orange", "value": 0.8 }, { "color": "green", "value": 0.95 }] },
+          "mappings": []
+        }
       },
-      {
-        "title": "Write Throughput",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
-        "datasource": { "uid": "PBFA97CFB590B2093" },
-        "targets": [{ "expr": "rate(chronicle_server_write_bytes_total{instance=~\"$instance\"}[1m])", "legendFormat": "{{instance}}" }],
-        "fieldConfig": { "defaults": { "unit": "Bps" } }
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "id": 4,
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "textMode": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [{ "expr": "1 - (sum(rate(chronicle_server_write_errors_total[5m])) + sum(rate(chronicle_server_read_errors_total[5m]))) / clamp_min(sum(rate(chronicle_server_write_requests_total[5m])) + sum(rate(chronicle_server_read_requests_total[5m])), 1)", "legendFormat": "" }],
+      "title": "Success Rate",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "pointSize": 5, "spanNulls": false, "showPoints": "never" },
+          "unit": "s"
+        },
+        "overrides": []
       },
-      {
-        "title": "Read Requests / sec",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
-        "datasource": { "uid": "PBFA97CFB590B2093" },
-        "targets": [{ "expr": "rate(chronicle_server_read_requests_total{instance=~\"$instance\"}[1m])", "legendFormat": "{{instance}}" }],
-        "fieldConfig": { "defaults": { "unit": "reqps" } }
+      "gridPos": { "h": 8, "w": 8, "x": 12, "y": 1 },
+      "id": 5,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(chronicle_server_write_latency_seconds_bucket[5m])) by (le))", "legendFormat": "write p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(chronicle_server_write_latency_seconds_bucket[5m])) by (le))", "legendFormat": "write p95" },
+        { "expr": "histogram_quantile(0.99, sum(rate(chronicle_server_write_latency_seconds_bucket[5m])) by (le))", "legendFormat": "write p99" },
+        { "expr": "histogram_quantile(0.50, sum(rate(chronicle_server_read_latency_seconds_bucket[5m])) by (le))", "legendFormat": "read p50" },
+        { "expr": "histogram_quantile(0.99, sum(rate(chronicle_server_read_latency_seconds_bucket[5m])) by (le))", "legendFormat": "read p99" }
+      ],
+      "title": "Latency Overview",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "percentunit",
+          "min": 0, "max": 1,
+          "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "orange", "value": 0.5 }, { "color": "green", "value": 0.8 }] }
+        }
       },
-      {
-        "title": "Read Events / sec",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
-        "datasource": { "uid": "PBFA97CFB590B2093" },
-        "targets": [{ "expr": "rate(chronicle_server_read_events_total{instance=~\"$instance\"}[1m])", "legendFormat": "{{instance}}" }],
-        "fieldConfig": { "defaults": { "unit": "evtps" } }
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+      "id": 6,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "showThresholdLabels": false, "showThresholdMarkers": true, "orientation": "auto" },
+      "targets": [{ "expr": "count(up{job=\"chronicle\"} == 1) / count(up{job=\"chronicle\"})", "legendFormat": "" }],
+      "title": "Cluster Health",
+      "type": "gauge"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "reqps",
+          "thresholds": { "steps": [{ "color": "green", "value": null }] }
+        }
       },
-      {
-        "title": "Read Latency p50 / p99",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 16 },
-        "datasource": { "uid": "PBFA97CFB590B2093" },
-        "targets": [
-          { "expr": "histogram_quantile(0.50, rate(chronicle_server_read_latency_seconds_bucket{instance=~\"$instance\"}[1m]))", "legendFormat": "p50 {{instance}}" },
-          { "expr": "histogram_quantile(0.99, rate(chronicle_server_read_latency_seconds_bucket{instance=~\"$instance\"}[1m]))", "legendFormat": "p99 {{instance}}" }
-        ],
-        "fieldConfig": { "defaults": { "unit": "s" } }
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 5 },
+      "id": 7,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "sum(rate(chronicle_server_write_requests_total[5m]))", "legendFormat": "" }],
+      "title": "Write Rate",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "reqps",
+          "thresholds": { "steps": [{ "color": "green", "value": null }] }
+        }
       },
-      {
-        "title": "WAL Writes / sec",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 16 },
-        "datasource": { "uid": "PBFA97CFB590B2093" },
-        "targets": [{ "expr": "rate(chronicle_server_wal_writes_total{instance=~\"$instance\"}[1m])", "legendFormat": "{{instance}}" }],
-        "fieldConfig": { "defaults": { "unit": "wps" } }
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 5 },
+      "id": 8,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "sum(rate(chronicle_server_read_requests_total[5m]))", "legendFormat": "" }],
+      "title": "Read Rate",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "decbytes",
+          "thresholds": { "steps": [{ "color": "blue", "value": null }] }
+        }
       },
-      {
-        "title": "WAL Throughput",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 16 },
-        "datasource": { "uid": "PBFA97CFB590B2093" },
-        "targets": [{ "expr": "rate(chronicle_server_wal_bytes_total{instance=~\"$instance\"}[1m])", "legendFormat": "{{instance}}" }],
-        "fieldConfig": { "defaults": { "unit": "Bps" } }
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 5 },
+      "id": 9,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "sum(chronicle_server_disk_usage_bytes)", "legendFormat": "" }],
+      "title": "Total Disk Usage",
+      "type": "stat"
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "id": 20,
+      "title": "Unit",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "Bps"
+        }
       },
-      {
-        "title": "WAL Sync Latency p50 / p99",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 24 },
-        "datasource": { "uid": "PBFA97CFB590B2093" },
-        "targets": [
-          { "expr": "histogram_quantile(0.50, rate(chronicle_server_wal_sync_latency_seconds_bucket{instance=~\"$instance\"}[1m]))", "legendFormat": "p50 {{instance}}" },
-          { "expr": "histogram_quantile(0.99, rate(chronicle_server_wal_sync_latency_seconds_bucket{instance=~\"$instance\"}[1m]))", "legendFormat": "p99 {{instance}}" }
-        ],
-        "fieldConfig": { "defaults": { "unit": "s" } }
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 10 },
+      "id": 21,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "rate(chronicle_server_write_bytes_total[5m])", "legendFormat": "{{instance}} write" }
+      ],
+      "title": "Write Bytes per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "ops"
+        }
       },
-      {
-        "title": "Write Cache Entries",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 24 },
-        "datasource": { "uid": "PBFA97CFB590B2093" },
-        "targets": [{ "expr": "chronicle_server_write_cache_entries{instance=~\"$instance\"}", "legendFormat": "{{instance}}" }],
-        "fieldConfig": { "defaults": { "unit": "short" } }
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 10 },
+      "id": 22,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "rate(chronicle_server_write_requests_total[5m])", "legendFormat": "{{instance}} writes" },
+        { "expr": "rate(chronicle_server_read_requests_total[5m])", "legendFormat": "{{instance}} reads" }
+      ],
+      "title": "Request Rate per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "short"
+        }
       },
-      {
-        "title": "Write Cache Seals / sec",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 24 },
-        "datasource": { "uid": "PBFA97CFB590B2093" },
-        "targets": [{ "expr": "rate(chronicle_server_write_cache_seals_total{instance=~\"$instance\"}[1m])", "legendFormat": "{{instance}}" }],
-        "fieldConfig": { "defaults": { "unit": "ops" } }
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 10 },
+      "id": 23,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "chronicle_server_write_queue_depth", "legendFormat": "{{instance}} write queue" },
+        { "expr": "chronicle_server_read_queue_depth", "legendFormat": "{{instance}} read queue" }
+      ],
+      "title": "Queue Depth per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "s"
+        }
       },
-      {
-        "title": "Compaction Runs / sec",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 32 },
-        "datasource": { "uid": "PBFA97CFB590B2093" },
-        "targets": [{ "expr": "rate(chronicle_server_compaction_runs_total{instance=~\"$instance\"}[1m])", "legendFormat": "L{{level}} {{instance}}" }],
-        "fieldConfig": { "defaults": { "unit": "ops" } }
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 18 },
+      "id": 24,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (le, instance) (rate(chronicle_server_write_latency_seconds_bucket[5m])))", "legendFormat": "{{instance}}" }
+      ],
+      "title": "Write Latency p50 per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "s"
+        }
       },
-      {
-        "title": "Compaction Latency p99",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 32 },
-        "datasource": { "uid": "PBFA97CFB590B2093" },
-        "targets": [{ "expr": "histogram_quantile(0.99, rate(chronicle_server_compaction_latency_seconds_bucket{instance=~\"$instance\"}[5m]))", "legendFormat": "p99 L{{level}} {{instance}}" }],
-        "fieldConfig": { "defaults": { "unit": "s" } }
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 18 },
+      "id": 25,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.99, sum by (le, instance) (rate(chronicle_server_write_latency_seconds_bucket[5m])))", "legendFormat": "{{instance}}" }
+      ],
+      "title": "Write Latency p99 per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "s"
+        }
       },
-      {
-        "title": "Segment Count by Level",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 32 },
-        "datasource": { "uid": "PBFA97CFB590B2093" },
-        "targets": [{ "expr": "chronicle_server_segments_count{instance=~\"$instance\"}", "legendFormat": "L{{level}} {{instance}}" }],
-        "fieldConfig": { "defaults": { "unit": "short" } }
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 18 },
+      "id": 26,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(1.0, sum by (le, instance) (rate(chronicle_server_write_latency_seconds_bucket[5m])))", "legendFormat": "{{instance}}" }
+      ],
+      "title": "Write Latency Max per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "s"
+        }
       },
-      {
-        "title": "Index Reads / sec",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 40 },
-        "datasource": { "uid": "PBFA97CFB590B2093" },
-        "targets": [{ "expr": "rate(chronicle_server_index_reads_total{instance=~\"$instance\"}[1m])", "legendFormat": "{{instance}}" }],
-        "fieldConfig": { "defaults": { "unit": "ops" } }
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 26 },
+      "id": 27,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (le, instance) (rate(chronicle_server_read_latency_seconds_bucket[5m])))", "legendFormat": "{{instance}}" }
+      ],
+      "title": "Read Latency p50 per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "s"
+        }
       },
-      {
-        "title": "Index Writes / sec",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 40 },
-        "datasource": { "uid": "PBFA97CFB590B2093" },
-        "targets": [{ "expr": "rate(chronicle_server_index_writes_total{instance=~\"$instance\"}[1m])", "legendFormat": "{{instance}}" }],
-        "fieldConfig": { "defaults": { "unit": "ops" } }
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 26 },
+      "id": 28,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.99, sum by (le, instance) (rate(chronicle_server_read_latency_seconds_bucket[5m])))", "legendFormat": "{{instance}}" }
+      ],
+      "title": "Read Latency p99 per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "s"
+        }
       },
-      {
-        "title": "RocksDB Block Cache Hit Rate",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 40 },
-        "datasource": { "uid": "PBFA97CFB590B2093" },
-        "targets": [{ "expr": "rate(chronicle_rocksdb_block_cache_hits{instance=~\"$instance\"}[1m]) / (rate(chronicle_rocksdb_block_cache_hits{instance=~\"$instance\"}[1m]) + rate(chronicle_rocksdb_block_cache_misses{instance=~\"$instance\"}[1m]))", "legendFormat": "{{instance}}" }],
-        "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } }
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 26 },
+      "id": 29,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(1.0, sum by (le, instance) (rate(chronicle_server_read_latency_seconds_bucket[5m])))", "legendFormat": "{{instance}}" }
+      ],
+      "title": "Read Latency Max per Instance",
+      "type": "timeseries"
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 },
+      "id": 40,
+      "title": "WAL",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "ops"
+        }
       },
-      {
-        "title": "RocksDB Bytes Read / Written",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 48 },
-        "datasource": { "uid": "PBFA97CFB590B2093" },
-        "targets": [
-          { "expr": "rate(chronicle_rocksdb_bytes_read{instance=~\"$instance\"}[1m])", "legendFormat": "read {{instance}}" },
-          { "expr": "rate(chronicle_rocksdb_bytes_written{instance=~\"$instance\"}[1m])", "legendFormat": "written {{instance}}" }
-        ],
-        "fieldConfig": { "defaults": { "unit": "Bps" } }
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 35 },
+      "id": 41,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "rate(chronicle_server_wal_writes_total[5m])", "legendFormat": "{{instance}}" }
+      ],
+      "title": "WAL Write Rate per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "Bps"
+        }
       },
-      {
-        "title": "RocksDB Compaction IO",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 48 },
-        "datasource": { "uid": "PBFA97CFB590B2093" },
-        "targets": [
-          { "expr": "rate(chronicle_rocksdb_compact_read_bytes{instance=~\"$instance\"}[1m])", "legendFormat": "read {{instance}}" },
-          { "expr": "rate(chronicle_rocksdb_compact_write_bytes{instance=~\"$instance\"}[1m])", "legendFormat": "write {{instance}}" }
-        ],
-        "fieldConfig": { "defaults": { "unit": "Bps" } }
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 35 },
+      "id": 42,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "rate(chronicle_server_wal_bytes_total[5m])", "legendFormat": "{{instance}}" }
+      ],
+      "title": "WAL Bytes Rate per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "s"
+        }
       },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 35 },
+      "id": 43,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (le, instance) (rate(chronicle_server_wal_sync_latency_seconds_bucket[5m])))", "legendFormat": "{{instance}} p50" },
+        { "expr": "histogram_quantile(0.99, sum by (le, instance) (rate(chronicle_server_wal_sync_latency_seconds_bucket[5m])))", "legendFormat": "{{instance}} p99" }
+      ],
+      "title": "WAL Sync Latency Overview per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "s"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 43 },
+      "id": 44,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (le, instance) (rate(chronicle_server_wal_sync_latency_seconds_bucket[5m])))", "legendFormat": "{{instance}}" }
+      ],
+      "title": "WAL Sync Latency p50 per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "s"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 43 },
+      "id": 45,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.99, sum by (le, instance) (rate(chronicle_server_wal_sync_latency_seconds_bucket[5m])))", "legendFormat": "{{instance}}" }
+      ],
+      "title": "WAL Sync Latency p99 per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "s"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 43 },
+      "id": 46,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(1.0, sum by (le, instance) (rate(chronicle_server_wal_sync_latency_seconds_bucket[5m])))", "legendFormat": "{{instance}}" }
+      ],
+      "title": "WAL Sync Latency Max per Instance",
+      "type": "timeseries"
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 51 },
+      "id": 60,
+      "title": "Storage",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 52 },
+      "id": 61,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "chronicle_server_segments_count", "legendFormat": "{{instance}} {{level}}" }
+      ],
+      "title": "Segment Count per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "decbytes"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 52 },
+      "id": 62,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "chronicle_server_segments_bytes", "legendFormat": "{{instance}} {{level}}" }
+      ],
+      "title": "Segment Bytes per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 52 },
+      "id": 63,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "chronicle_server_write_cache_entries", "legendFormat": "{{instance}} entries" },
+        { "expr": "rate(chronicle_server_write_cache_seals_total[5m])", "legendFormat": "{{instance}} seals/s" }
+      ],
+      "title": "Write Cache per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "ops"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 60 },
+      "id": 64,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "rate(chronicle_server_compaction_runs_total[5m])", "legendFormat": "{{instance}} {{level}}" }
+      ],
+      "title": "Compaction Rate per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "Bps"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 60 },
+      "id": 65,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "rate(chronicle_server_compaction_bytes_read_total[5m])", "legendFormat": "{{instance}} read" },
+        { "expr": "rate(chronicle_server_compaction_bytes_written_total[5m])", "legendFormat": "{{instance}} written" }
+      ],
+      "title": "Compaction Bytes per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "s"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 60 },
+      "id": 66,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (le, instance) (rate(chronicle_server_compaction_latency_seconds_bucket[5m])))", "legendFormat": "{{instance}} p50" },
+        { "expr": "histogram_quantile(0.99, sum by (le, instance) (rate(chronicle_server_compaction_latency_seconds_bucket[5m])))", "legendFormat": "{{instance}} p99" },
+        { "expr": "histogram_quantile(1.0, sum by (le, instance) (rate(chronicle_server_compaction_latency_seconds_bucket[5m])))", "legendFormat": "{{instance}} max" }
+      ],
+      "title": "Compaction Latency per Instance",
+      "type": "timeseries"
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 68 },
+      "id": 80,
+      "title": "Index (RocksDB)",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "ops"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 69 },
+      "id": 81,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "rate(chronicle_server_index_reads_total[5m])", "legendFormat": "{{instance}} reads" },
+        { "expr": "rate(chronicle_server_index_writes_total[5m])", "legendFormat": "{{instance}} writes" }
+      ],
+      "title": "Index Ops Rate per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "s"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 69 },
+      "id": 82,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (le, instance) (rate(chronicle_server_index_read_latency_seconds_bucket[5m])))", "legendFormat": "{{instance}} read p50" },
+        { "expr": "histogram_quantile(0.99, sum by (le, instance) (rate(chronicle_server_index_read_latency_seconds_bucket[5m])))", "legendFormat": "{{instance}} read p99" }
+      ],
+      "title": "Index Read Latency per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "s"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 69 },
+      "id": 83,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (le, instance) (rate(chronicle_server_index_write_latency_seconds_bucket[5m])))", "legendFormat": "{{instance}} write p50" },
+        { "expr": "histogram_quantile(0.99, sum by (le, instance) (rate(chronicle_server_index_write_latency_seconds_bucket[5m])))", "legendFormat": "{{instance}} write p99" }
+      ],
+      "title": "Index Write Latency per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 77 },
+      "id": 84,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "chronicle_rocksdb_block_cache_hits", "legendFormat": "{{instance}} hits" },
+        { "expr": "chronicle_rocksdb_block_cache_misses", "legendFormat": "{{instance}} misses" }
+      ],
+      "title": "RocksDB Block Cache Hits/Misses",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "Bps"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 77 },
+      "id": 85,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "chronicle_rocksdb_bytes_written", "legendFormat": "{{instance}} written" },
+        { "expr": "chronicle_rocksdb_bytes_read", "legendFormat": "{{instance}} read" }
+      ],
+      "title": "RocksDB Bytes Written/Read",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 77 },
+      "id": 86,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "chronicle_rocksdb_bloom_useful", "legendFormat": "{{instance}} bloom useful" },
+        { "expr": "chronicle_rocksdb_compact_read_bytes", "legendFormat": "{{instance}} compact read" },
+        { "expr": "chronicle_rocksdb_compact_write_bytes", "legendFormat": "{{instance}} compact write" }
+      ],
+      "title": "RocksDB Bloom / Compaction",
+      "type": "timeseries"
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 85 },
+      "id": 90,
+      "title": "Catalog & Admin",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "ops"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 86 },
+      "id": 91,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "rate(chronicle_server_catalog_operations_total[5m])", "legendFormat": "{{instance}} ops" },
+        { "expr": "rate(chronicle_server_catalog_errors_total[5m])", "legendFormat": "{{instance}} errors" }
+      ],
+      "title": "Catalog Ops Rate per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "s"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 86 },
+      "id": 92,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (le, instance) (rate(chronicle_server_catalog_latency_seconds_bucket[5m])))", "legendFormat": "{{instance}} p50" },
+        { "expr": "histogram_quantile(0.99, sum by (le, instance) (rate(chronicle_server_catalog_latency_seconds_bucket[5m])))", "legendFormat": "{{instance}} p99" }
+      ],
+      "title": "Catalog Latency per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "ops"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 86 },
+      "id": 93,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "rate(chronicle_server_admin_requests_total[5m])", "legendFormat": "{{instance}}" }
+      ],
+      "title": "Admin Request Rate per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "s"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 94 },
+      "id": 94,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (le, instance) (rate(chronicle_server_admin_latency_seconds_bucket[5m])))", "legendFormat": "{{instance}} p50" },
+        { "expr": "histogram_quantile(0.99, sum by (le, instance) (rate(chronicle_server_admin_latency_seconds_bucket[5m])))", "legendFormat": "{{instance}} p99" }
+      ],
+      "title": "Admin Latency per Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "ops"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 94 },
+      "id": 95,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "rate(chronicle_server_failed_requests_total[5m])", "legendFormat": "{{instance}}" }
+      ],
+      "title": "Failed Requests per Instance",
+      "type": "timeseries"
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["chronicle"],
+  "templating": {
+    "list": [
       {
-        "title": "RocksDB Bloom Filter Useful / sec",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 48 },
-        "datasource": { "uid": "PBFA97CFB590B2093" },
-        "targets": [{ "expr": "rate(chronicle_rocksdb_bloom_useful{instance=~\"$instance\"}[1m])", "legendFormat": "{{instance}}" }],
-        "fieldConfig": { "defaults": { "unit": "ops" } }
+        "current": { "selected": false, "text": "Prometheus", "value": "Prometheus" },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "type": "datasource"
       }
-    ],
-    "schemaVersion": 39
+    ]
   },
-  "overwrite": true
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Chronicle Unit",
+  "uid": "chronicle-unit",
+  "version": 1
 }

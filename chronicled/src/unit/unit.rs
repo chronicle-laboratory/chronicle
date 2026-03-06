@@ -49,6 +49,7 @@ pub struct Unit {
     catalog: Arc<dyn Catalog>,
     address: String,
     _meter_provider: opentelemetry_sdk::metrics::SdkMeterProvider,
+    _observable_gauges: Vec<opentelemetry::metrics::ObservableGauge<u64>>,
 }
 
 impl Unit {
@@ -75,7 +76,12 @@ impl Unit {
         })?;
         info!(path = %options.storage.dir, "storage index opened");
 
-        observability::register_rocksdb_gauges(&meter, storage.clone());
+        let mut observable_gauges = observability::register_rocksdb_gauges(&meter, storage.clone());
+        observable_gauges.push(observability::register_disk_usage_gauge(&meter, vec![
+            options.wal.dir.clone(),
+            options.storage.dir.clone(),
+            options.segments.dir.clone(),
+        ]));
 
         let wal = Wal::new(WalOptions {
             dir: options.wal.dir.clone(),
@@ -228,13 +234,24 @@ impl Unit {
         // ready on first attempt after build().
         let mut last_err = None;
         for attempt in 0..10 {
+            let cat_start = std::time::Instant::now();
+            let cat_attrs = [opentelemetry::KeyValue::new("op", "register_unit")];
             match catalog.register_unit(&registration).await {
                 Ok(()) => {
+                    if let Some(m) = observability::global_metrics() {
+                        m.catalog_operations.add(1, &cat_attrs);
+                        m.catalog_latency.record(cat_start.elapsed().as_secs_f64(), &cat_attrs);
+                    }
                     info!(address = %address, "unit registered in catalog");
                     last_err = None;
                     break;
                 }
                 Err(e) => {
+                    if let Some(m) = observability::global_metrics() {
+                        m.catalog_operations.add(1, &cat_attrs);
+                        m.catalog_errors.add(1, &cat_attrs);
+                        m.catalog_latency.record(cat_start.elapsed().as_secs_f64(), &cat_attrs);
+                    }
                     warn!(attempt, error = %e, "catalog registration failed, retrying");
                     last_err = Some(e);
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -255,6 +272,7 @@ impl Unit {
             catalog,
             address,
             _meter_provider: meter_provider,
+            _observable_gauges: observable_gauges,
         })
     }
 

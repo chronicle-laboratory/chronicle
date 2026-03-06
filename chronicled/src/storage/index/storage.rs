@@ -111,6 +111,7 @@ impl Storage {
         &self,
         entries: &[((i64, i64), IndexEntry)],
     ) -> Result<(), UnitError> {
+        let start = std::time::Instant::now();
         let mut batch = WriteBatch::default();
         for &((timeline_id, offset), ref entry) in entries {
             let key = encode_key(timeline_id, offset);
@@ -123,6 +124,7 @@ impl Storage {
             .map_err(|e| UnitError::Storage(e.to_string()));
         if let Some(m) = crate::observability::global_metrics() {
             m.index_writes.add(entries.len() as u64, &[]);
+            m.index_write_latency.record(start.elapsed().as_secs_f64(), &[]);
         }
         result
     }
@@ -163,6 +165,7 @@ impl Storage {
         start_offset: i64,
         end_offset: i64,
     ) -> Vec<(i64, IndexEntry)> {
+        let scan_start = std::time::Instant::now();
         let start_key = encode_key(timeline_id, start_offset);
         let iter = self.inner.database.iterator(
             rocksdb::IteratorMode::From(&start_key, rocksdb::Direction::Forward),
@@ -189,6 +192,7 @@ impl Storage {
         }
         if let Some(m) = crate::observability::global_metrics() {
             m.index_reads.add(1, &[]);
+            m.index_read_latency.record(scan_start.elapsed().as_secs_f64(), &[]);
         }
         results
     }

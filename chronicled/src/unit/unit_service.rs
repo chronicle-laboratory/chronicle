@@ -69,6 +69,7 @@ impl Chronicle for UnitService {
                         for item in req.items {
                             let start = Instant::now();
                             metrics.write_requests.add(1, &[]);
+                            metrics.write_queue_depth.add(1, &[]);
                             let payload_len = item.event.as_ref()
                                 .and_then(|e| e.payload.as_ref())
                                 .map_or(0, |p| p.len() as u64);
@@ -79,7 +80,9 @@ impl Chronicle for UnitService {
                                 res_tx: item_tx,
                             };
                             if let Err(_e) = write_group.dispatch(envelope).await {
+                                metrics.write_queue_depth.add(-1, &[]);
                                 metrics.write_errors.add(1, &[]);
+                                metrics.failed_requests.add(1, &[]);
                                 let response = RecordEventsResponse {
                                     items: vec![RecordEventsResponseItem {
                                         code: StatusCode::InvalidTerm.into(),
@@ -95,6 +98,7 @@ impl Chronicle for UnitService {
                             if let Some(result) = item_rx.recv().await {
                                 match result {
                                     Ok(event) => {
+                                        metrics.write_queue_depth.add(-1, &[]);
                                         metrics.write_latency.record(start.elapsed().as_secs_f64(), &[]);
                                         metrics.write_bytes.add(payload_len, &[]);
                                         let response = RecordEventsResponse {
@@ -108,6 +112,7 @@ impl Chronicle for UnitService {
                                         }
                                     }
                                     Err(status) => {
+                                        metrics.write_queue_depth.add(-1, &[]);
                                         metrics.write_errors.add(1, &[]);
                                         if tx.send(Err(status)).await.is_err() {
                                             return;
@@ -147,6 +152,7 @@ impl Chronicle for UnitService {
                     Ok(req) => {
                         let start = Instant::now();
                         metrics.read_requests.add(1, &[]);
+                        metrics.read_queue_depth.add(1, &[]);
 
                         let (item_tx, mut item_rx) = mpsc::channel(16);
                         let envelope = Envelope {
@@ -154,7 +160,9 @@ impl Chronicle for UnitService {
                             res_tx: item_tx,
                         };
                         if let Err(e) = read_group.dispatch(envelope).await {
+                            metrics.read_queue_depth.add(-1, &[]);
                             metrics.read_errors.add(1, &[]);
+                            metrics.failed_requests.add(1, &[]);
                             if tx.send(Err(e)).await.is_err() {
                                 return;
                             }
@@ -170,6 +178,7 @@ impl Chronicle for UnitService {
                                 return;
                             }
                         }
+                        metrics.read_queue_depth.add(-1, &[]);
                         metrics.read_latency.record(start.elapsed().as_secs_f64(), &[]);
                         metrics.read_events.add(event_count, &[]);
                     }

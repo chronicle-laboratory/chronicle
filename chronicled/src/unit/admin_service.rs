@@ -1,10 +1,12 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use chronicle_proto::pb_admin::admin_server::Admin;
 use chronicle_proto::pb_admin::{
     DiskUsage, GetStatusRequest, GetStatusResponse, ListSegmentsRequest, ListSegmentsResponse,
     SegmentInfo, TriggerCompactionRequest, TriggerCompactionResponse,
 };
+use opentelemetry::KeyValue;
 use tonic::{Request, Response, Status};
 
 use crate::storage::blob::manager::{SegmentLocation, SegmentManager};
@@ -29,6 +31,11 @@ impl Admin for AdminService {
         &self,
         _request: Request<GetStatusRequest>,
     ) -> Result<Response<GetStatusResponse>, Status> {
+        let start = Instant::now();
+        let attrs = [KeyValue::new("method", "get_status")];
+        if let Some(m) = crate::observability::global_metrics() {
+            m.admin_requests.add(1, &attrs);
+        }
         let wal_segment_id = self.wal.current_segment_id().await;
         let wal_checkpoint = checkpoint::read_checkpoint(&self.index);
         let state_val = self.state.load(std::sync::atomic::Ordering::Relaxed);
@@ -39,6 +46,9 @@ impl Admin for AdminService {
             _ => "UNKNOWN",
         };
 
+        if let Some(m) = crate::observability::global_metrics() {
+            m.admin_latency.record(start.elapsed().as_secs_f64(), &attrs);
+        }
         Ok(Response::new(GetStatusResponse {
             state: state_str.to_string(),
             wal_segment_id,
