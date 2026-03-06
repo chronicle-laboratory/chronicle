@@ -294,6 +294,24 @@ pub fn register_disk_usage_gauge(meter: &Meter, labeled_dirs: Vec<(String, Strin
         .build()
 }
 
+/// Register a gauge that reports the total filesystem capacity of the data directory.
+pub fn register_disk_capacity_gauge(meter: &Meter, data_dir: String) -> ObservableGauge<u64> {
+    meter
+        .u64_observable_gauge("chronicle.server.disk.capacity_bytes")
+        .with_description("Total filesystem capacity in bytes")
+        .with_callback(move |observer| {
+            if let Ok(c_path) = std::ffi::CString::new(data_dir.as_str()) {
+                let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+                let ret = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
+                if ret == 0 {
+                    let total = stat.f_blocks as u64 * stat.f_frsize as u64;
+                    observer.observe(total, &[]);
+                }
+            }
+        })
+        .build()
+}
+
 /// Register RocksDB ticker gauges that are polled on each Prometheus scrape.
 /// The returned handles must be kept alive for the gauges to be reported.
 pub fn register_rocksdb_gauges(meter: &Meter, storage: crate::storage::index::Storage) -> Vec<ObservableGauge<u64>> {

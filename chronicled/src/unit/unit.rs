@@ -82,6 +82,7 @@ impl Unit {
             ("index".to_string(), options.storage.dir.clone()),
             ("blob".to_string(), options.segments.dir.clone()),
         ]));
+        observable_gauges.push(observability::register_disk_capacity_gauge(&meter, options.storage.dir.clone()));
 
         let wal = Wal::new(WalOptions {
             dir: options.wal.dir.clone(),
