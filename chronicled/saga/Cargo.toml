@@ -6,6 +6,8 @@ resolver = "3"
 
 [dependencies]
 chronicle-proto = { workspace = true }
+chronicle-lexicon = { path = "../lexicon" }
+chronicle-lexicon-client = { path = "../../clients/lexicon-client" }
 catalog = { path = "../../catalog" }
 async-trait = { workspace = true }
 tracing = { workspace = true }
@@ -32,6 +34,7 @@ futures-util = { workspace = true }
 bytes = { workspace = true }
 aws-sdk-s3 = { workspace = true }
 aws-config = { workspace = true }
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3.8"

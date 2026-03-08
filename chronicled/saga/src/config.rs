@@ -50,6 +50,10 @@ pub struct SagaConfig {
     #[serde(default = "default_http_port")]
     pub http_port: u16,
 
+    /// Lexicon (schema registry) gRPC endpoint
+    #[serde(default = "default_lexicon_endpoint")]
+    pub lexicon_endpoint: String,
+
     /// Use local filesystem instead of S3 (dev mode)
     #[serde(default)]
     pub use_local_fs: bool,
@@ -67,6 +71,7 @@ fn default_row_group_size() -> usize { 128 * 1024 * 1024 }
 fn default_wal_poll() -> u64 { 1000 }
 fn default_merge_interval() -> u64 { 60 }
 fn default_http_port() -> u16 { 3000 }
+fn default_lexicon_endpoint() -> String { "http://chronicle-lexicon:50060".into() }
 
 impl Default for SagaConfig {
     fn default() -> Self {
@@ -83,6 +88,7 @@ impl Default for SagaConfig {
             wal_poll_interval_ms: default_wal_poll(),
             merge_check_interval_secs: default_merge_interval(),
             http_port: default_http_port(),
+            lexicon_endpoint: default_lexicon_endpoint(),
             use_local_fs: true,
         }
     }

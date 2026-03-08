@@ -26,17 +26,18 @@ impl Flusher {
     /// Flush a FrozenBuffer: merge batches, sort, write to local Parquet.
     pub async fn flush(&self, frozen: FrozenBuffer) -> Result<L0FileMeta> {
         let topic = &frozen.topic;
-        let topic_config = self.catalog.topic_config(topic)?;
+        let sort_keys = self.catalog.sort_keys(topic);
+        let granularity = self.catalog.partition_granularity(topic);
         let schema = frozen.schema.clone();
 
         // Merge all RecordBatches into one.
         let merged = concat_batches(&schema, &frozen.batches)?;
 
         // Sort by sort_keys.
-        let sorted = sort_batches(merged, &schema, &topic_config.sort_keys)?;
+        let sorted = sort_batches(merged, &schema, &sort_keys)?;
 
         // Determine partition key from first timestamp column.
-        let partition_key = determine_partition_key(&sorted, &topic_config);
+        let partition_key = determine_partition_key(&sorted, &sort_keys, &granularity);
 
         // Build output path.
         let dir = format!("{}/{}/l0", self.config.local_data_dir, topic);
@@ -54,7 +55,7 @@ impl Flusher {
         let file_size = fs::metadata(&path)?.len() as usize;
 
         // Compute timestamp range.
-        let (min_ts, max_ts) = timestamp_range(&sorted, &topic_config.sort_keys);
+        let (min_ts, max_ts) = timestamp_range(&sorted, &sort_keys);
 
         let meta = L0FileMeta {
             path: path.clone(),
@@ -119,23 +120,21 @@ fn sort_batches(
 /// Determine partition key from the first row's timestamp.
 fn determine_partition_key(
     batch: &RecordBatch,
-    topic_config: &crate::types::TopicConfig,
+    sort_keys: &[String],
+    granularity: &crate::types::PartitionGranularity,
 ) -> String {
     use arrow::array::TimestampMillisecondArray;
 
-    for key in &topic_config.sort_keys {
+    for key in sort_keys {
         if let Ok(idx) = batch.schema().index_of(key) {
             if let Some(ts_arr) = batch.column(idx).as_any().downcast_ref::<TimestampMillisecondArray>() {
                 if !ts_arr.is_empty() {
-                    return crate::types::partition_key(
-                        ts_arr.value(0),
-                        &topic_config.partition_granularity,
-                    );
+                    return crate::types::partition_key(ts_arr.value(0), granularity);
                 }
             }
         }
     }
-    crate::types::partition_key(0, &topic_config.partition_granularity)
+    crate::types::partition_key(0, granularity)
 }
 
 /// Extract min/max timestamp from the batch.
@@ -195,7 +194,7 @@ fn build_writer_properties(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{FieldDef, FieldType, PartitionGranularity, TopicConfig};
+    use crate::types::PartitionGranularity;
     use arrow::array::{Int64Array, TimestampMillisecondArray};
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 
@@ -228,15 +227,12 @@ mod tests {
             ..Default::default()
         };
         let catalog = Arc::new(SagaCatalog::new());
-        catalog.register_topic(TopicConfig {
-            name: "test".into(),
-            schema: vec![
-                FieldDef { name: "timestamp".into(), data_type: FieldType::TimestampMillis, nullable: false },
-                FieldDef { name: "value".into(), data_type: FieldType::Int64, nullable: true },
-            ],
-            sort_keys: vec!["timestamp".into()],
-            partition_granularity: PartitionGranularity::Day,
-        }).unwrap();
+        catalog.register_subject_local(
+            "test",
+            test_schema(),
+            vec!["timestamp".into()],
+            PartitionGranularity::Day,
+        ).unwrap();
 
         let schema = test_schema();
         let ts = Arc::new(TimestampMillisecondArray::from(vec![200, 100]));

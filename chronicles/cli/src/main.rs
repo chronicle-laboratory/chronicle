@@ -1,3 +1,4 @@
+use chronicle_cli::lexicon::LexiconAction;
 use chronicle_cli::saga::SagaAction;
 use chronicle_cli::unit::UnitAction;
 use chronicle_cli::verify::VerifyArgs;
@@ -22,6 +23,11 @@ enum Commands {
         #[command(subcommand)]
         action: SagaAction,
     },
+    /// Manage a lexicon (schema registry) server
+    Lexicon {
+        #[command(subcommand)]
+        action: LexiconAction,
+    },
     /// Run continuous verification against a live cluster
     Verify(VerifyArgs),
 }
@@ -33,6 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Unit { action } => chronicle_cli::unit::run(action).await?,
         Commands::Saga { action } => chronicle_cli::saga::run(action).await?,
+        Commands::Lexicon { action } => chronicle_cli::lexicon::run(action).await?,
         Commands::Verify(args) => {
             tracing_subscriber::fmt()
                 .with_env_filter(

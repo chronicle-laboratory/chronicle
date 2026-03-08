@@ -1,0 +1,31 @@
+[package]
+name = "chronicle-lexicon"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chronicle-proto = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+arrow = { workspace = true }
+tower-http = { workspace = true }
+clap = { workspace = true }
+
+apache-avro = "0.17"
+base64 = "0.22"
+sha2 = "0.10"
+prost-for-types = { package = "prost", version = "0.14" }
+
+[dev-dependencies]
+tempfile = "3"
+reqwest = { version = "0.12", features = ["json"] }

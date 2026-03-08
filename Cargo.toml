@@ -4,9 +4,11 @@ members = [
     "proto",
     "chronicled/unit",
     "chronicled/saga",
+    "chronicled/lexicon",
     "chronicles/libchronicle",
     "catalog",
     "chronicles/cli",
+    "clients/lexicon-client",
 ]
 
 [workspace.dependencies]

@@ -20,6 +20,8 @@ pub enum SagaError {
     Internal(String),
     #[error("Topic not found: {0}")]
     TopicNotFound(String),
+    #[error("Subject not found: {0}")]
+    SubjectNotFound(String),
 }
 
 pub type Result<T> = std::result::Result<T, SagaError>;

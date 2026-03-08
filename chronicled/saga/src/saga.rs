@@ -6,13 +6,14 @@ use crate::storage::memtable::Memtable;
 use crate::storage::merger::Merger;
 use crate::storage::saga_catalog::SagaCatalog;
 use crate::server::http::{self, AppState};
+use chronicle_lexicon_client::LexiconClient;
 use object_store::local::LocalFileSystem;
 use object_store::ObjectStore;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// Main Saga orchestrator that owns all background tasks.
 pub struct Saga {
@@ -33,7 +34,22 @@ impl Saga {
     ) -> std::result::Result<Self, Box<dyn std::error::Error>> {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-        let catalog = Arc::new(SagaCatalog::new());
+        // Connect to Lexicon for schema resolution.
+        let catalog = match LexiconClient::connect(&config.lexicon_endpoint).await {
+            Ok(client) => {
+                info!(endpoint = %config.lexicon_endpoint, "connected to lexicon");
+                Arc::new(SagaCatalog::with_lexicon(client))
+            }
+            Err(e) => {
+                warn!(
+                    endpoint = %config.lexicon_endpoint,
+                    error = %e,
+                    "failed to connect to lexicon, starting without schema registry"
+                );
+                Arc::new(SagaCatalog::new())
+            }
+        };
+
         let memtables: Arc<parking_lot::RwLock<HashMap<String, Arc<Memtable>>>> =
             Arc::new(parking_lot::RwLock::new(HashMap::new()));
 
@@ -112,7 +128,7 @@ impl Saga {
                             match merger.check_and_merge().await {
                                 Ok(Some(result)) => {
                                     info!(
-                                        topic = %result.topic,
+                                        subject = %result.topic,
                                         files_merged = result.l0_files_merged,
                                         rows = result.rows_total,
                                         "merge completed"
@@ -183,6 +199,7 @@ impl Saga {
         info!(
             http_port = config.http_port,
             wal_endpoint = %config.wal_endpoint,
+            lexicon_endpoint = %config.lexicon_endpoint,
             "Saga started"
         );
 
@@ -224,14 +241,14 @@ async fn flush_eligible(
                 match flusher.flush(frozen).await {
                     Ok(meta) => {
                         info!(
-                            topic = %topic,
+                            subject = %topic,
                             rows = meta.row_count,
                             path = %meta.path,
                             "memtable flushed"
                         );
                         lifecycle.advance_flushed(max_seq);
                     }
-                    Err(e) => error!(error = %e, topic = %topic, "flush failed"),
+                    Err(e) => error!(error = %e, subject = %topic, "flush failed"),
                 }
             }
         }
@@ -247,6 +264,7 @@ mod tests {
         let config = SagaConfig {
             http_port: 0,
             wal_endpoint: "http://127.0.0.1:19999".into(),
+            lexicon_endpoint: "http://127.0.0.1:19998".into(),
             checkpoint_path: "/tmp/saga-test-checkpoint.json".into(),
             ..Default::default()
         };

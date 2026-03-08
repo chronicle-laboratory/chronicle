@@ -13,6 +13,7 @@ fn main() {
                 "pb_catalog.proto",
                 "pb_admin.proto",
                 "pb_saga.proto",
+                "pb_lexicon.proto",
             ],
             &[""],
         )

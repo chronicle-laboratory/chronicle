@@ -1,4 +1,4 @@
-# Chronicle Unit Dockerfile
+# Chronicle Dockerfile
 #   docker build -t chronicle-unit:dev .
 
 FROM rust:latest
@@ -12,6 +12,7 @@ COPY proto/ proto/
 COPY catalog/ catalog/
 COPY chronicled/ chronicled/
 COPY chronicles/ chronicles/
+COPY clients/ clients/
 
 RUN cargo build --release -p chronicle-cli
 
@@ -20,9 +21,9 @@ RUN cp target/release/chronicle /usr/local/bin/chronicle && \
 
 COPY chronicled.toml /etc/chronicle/chronicled.toml
 
-RUN mkdir -p /data/wal /data/storage /data/segments
+RUN mkdir -p /data/wal /data/storage /data/segments /data/lexicon
 
-EXPOSE 7070 7071
+EXPOSE 7070 7071 50060 8080
 
 ENTRYPOINT ["chronicle"]
 CMD ["unit", "start", "--config", "/etc/chronicle/chronicled.toml"]

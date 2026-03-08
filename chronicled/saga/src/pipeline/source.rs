@@ -12,7 +12,9 @@ use std::sync::Arc;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
-/// WAL source that pulls data via gRPC and writes into per-topic Memtables.
+/// WAL source that pulls data via gRPC and writes into per-subject Memtables.
+///
+/// Schemas are resolved from Lexicon (schema registry) on demand via `SagaCatalog`.
 pub struct Source {
     config: SagaConfig,
     catalog: Arc<SagaCatalog>,
@@ -104,18 +106,19 @@ impl Source {
             .await?
             .into_inner();
 
-        // Determine topic from schema_id (for now, use schema_id as topic name).
-        let topic = &segment.schema_id;
+        // schema_id maps to a Lexicon subject.
+        let subject = &segment.schema_id;
 
-        let topic_config = match self.catalog.topic_config(topic) {
-            Ok(tc) => tc,
-            Err(_) => {
-                warn!(topic = %topic, "unknown topic, skipping segment");
+        // Resolve schema from Lexicon (cached after first lookup).
+        let arrow_schema = match self.catalog.resolve_schema(subject).await {
+            Ok(schema) => schema,
+            Err(e) => {
+                warn!(subject = %subject, error = %e, "failed to resolve schema, skipping segment");
                 return Ok(());
             }
         };
 
-        let memtable = self.get_or_create_memtable(topic);
+        let memtable = self.get_or_create_memtable(subject)?;
 
         while let Some(batch_resp) = futures_util::StreamExt::next(&mut stream).await {
             let batch_resp = batch_resp?;
@@ -123,7 +126,7 @@ impl Source {
                 continue;
             }
 
-            let record_batch = decoder::decode_rows(&batch_resp.rows, &topic_config)?;
+            let record_batch = decoder::decode_rows(&batch_resp.rows, &arrow_schema)?;
             memtable.ingest(record_batch, segment.sequence_id)?;
         }
 
@@ -137,7 +140,7 @@ impl Source {
         self.lifecycle.advance_ingested(segment.sequence_id);
 
         info!(
-            topic = %topic,
+            subject = %subject,
             sequence_id = segment.sequence_id,
             "segment consumed"
         );
@@ -145,22 +148,24 @@ impl Source {
         Ok(())
     }
 
-    fn get_or_create_memtable(&self, topic: &str) -> Arc<Memtable> {
+    fn get_or_create_memtable(&self, subject: &str) -> Result<Arc<Memtable>> {
         {
             let tables = self.memtables.read();
-            if let Some(mt) = tables.get(topic) {
-                return mt.clone();
+            if let Some(mt) = tables.get(subject) {
+                return Ok(mt.clone());
             }
         }
 
         let schema = self
             .catalog
-            .schema(topic)
-            .expect("topic must be registered before memtable creation");
+            .schema(subject)
+            .map_err(|_| SagaError::Internal(format!(
+                "subject '{}' must be resolved before memtable creation", subject
+            )))?;
 
         let mt = Arc::new(Memtable::new(schema));
         let mut tables = self.memtables.write();
-        tables.entry(topic.to_string()).or_insert(mt).clone()
+        Ok(tables.entry(subject.to_string()).or_insert(mt).clone())
     }
 }
 

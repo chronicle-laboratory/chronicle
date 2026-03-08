@@ -1,0 +1,152 @@
+syntax = "proto3";
+package chronicle.lexicon;
+
+// ============ Wire Format ============
+
+enum WireFormat {
+  WIRE_JSON     = 0;
+  WIRE_AVRO     = 1;
+  WIRE_PROTOBUF = 2;
+}
+
+// ============ Schema Input ============
+
+message SchemaInput {
+  oneof format {
+    BasicSchema basic           = 1;
+    string json_schema          = 2;
+    string avro_schema          = 3;
+    ProtobufSchema protobuf     = 4;
+  }
+}
+
+message BasicSchema {
+  repeated BasicFieldProto fields = 1;
+}
+
+message BasicFieldProto {
+  string name             = 1;
+  string field_type       = 2;
+  bool nullable           = 3;
+  optional BasicTypeRef element   = 4;
+  optional BasicTypeRef key       = 5;
+  optional BasicTypeRef value     = 6;
+  repeated BasicFieldProto fields = 7;
+  repeated string variants        = 8;
+  optional uint32 precision       = 9;
+  optional int32 scale            = 10;
+}
+
+message BasicTypeRef {
+  string field_type = 1;
+  optional BasicTypeRef element   = 2;
+  optional BasicTypeRef key       = 3;
+  optional BasicTypeRef value     = 4;
+}
+
+message ProtobufSchema {
+  bytes descriptor    = 1;
+  string message_name = 2;
+}
+
+// ============ Stored Schema ============
+
+message StoredSchemaProto {
+  oneof content {
+    string json_schema              = 1;
+    string avro_schema              = 2;
+    ProtobufSchemaStored protobuf   = 3;
+  }
+}
+
+message ProtobufSchemaStored {
+  bytes descriptor    = 1;
+  string message_name = 2;
+}
+
+// ============ Records ============
+
+message SchemaRecordProto {
+  string subject              = 1;
+  uint32 version              = 2;
+  WireFormat wire_format      = 3;
+  StoredSchemaProto schema    = 4;
+  string fingerprint          = 5;
+  int64 created_at_ms         = 6;
+}
+
+message SubjectMetaProto {
+  string subject                        = 1;
+  WireFormat wire_format                = 2;
+  uint32 latest_version                 = 3;
+  uint32 total_versions                 = 4;
+  CompatibilityMode compatibility       = 5;
+}
+
+enum CompatibilityMode {
+  COMPAT_FORWARD = 0;
+  COMPAT_NONE    = 1;
+}
+
+// ============ Service ============
+
+service Lexicon {
+  rpc RegisterSubject(RegisterSubjectRequest) returns (RegisterSubjectResponse);
+  rpc RegisterSchema(RegisterSchemaRequest) returns (RegisterSchemaResponse);
+  rpc GetLatestSchema(GetSchemaRequest) returns (SchemaRecordProto);
+  rpc GetSchemaVersion(GetSchemaVersionRequest) returns (SchemaRecordProto);
+  rpc GetSubject(GetSubjectRequest) returns (SubjectMetaProto);
+  rpc ListSubjects(ListSubjectsRequest) returns (ListSubjectsResponse);
+  rpc CheckCompatibility(CheckCompatibilityRequest) returns (CheckCompatibilityResponse);
+}
+
+message RegisterSubjectRequest {
+  string subject                    = 1;
+  WireFormat wire_format            = 2;
+  SchemaInput schema                = 3;
+  CompatibilityMode compatibility   = 4;
+}
+
+message RegisterSubjectResponse {
+  SchemaRecordProto schema = 1;
+  SubjectMetaProto meta    = 2;
+}
+
+message RegisterSchemaRequest {
+  string subject     = 1;
+  SchemaInput schema = 2;
+}
+
+message RegisterSchemaResponse {
+  SchemaRecordProto schema = 1;
+  bool is_new_version      = 2;
+}
+
+message GetSchemaRequest {
+  string subject = 1;
+}
+
+message GetSchemaVersionRequest {
+  string subject = 1;
+  uint32 version = 2;
+}
+
+message GetSubjectRequest {
+  string subject = 1;
+}
+
+message ListSubjectsRequest {}
+
+message ListSubjectsResponse {
+  repeated SubjectMetaProto subjects = 1;
+}
+
+message CheckCompatibilityRequest {
+  string subject     = 1;
+  SchemaInput schema = 2;
+}
+
+message CheckCompatibilityResponse {
+  bool compatible            = 1;
+  repeated string violations = 2;
+}

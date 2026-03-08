@@ -33,7 +33,7 @@ fn build_session_context(
 
     let schema_provider = Arc::new(MemorySchemaProvider::new());
 
-    for topic_name in catalog.list_topics() {
+    for topic_name in catalog.list_subjects() {
         let schema = match catalog.schema(&topic_name) {
             Ok(s) => s,
             Err(_) => continue,
@@ -103,31 +103,12 @@ fn collect_topic_batches(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{FieldDef, FieldType, PartitionGranularity, TopicConfig};
+    use crate::types::PartitionGranularity;
     use arrow::array::{Int64Array, TimestampMillisecondArray};
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 
     fn setup() -> (Arc<SagaCatalog>, Arc<parking_lot::RwLock<HashMap<String, Arc<Memtable>>>>) {
         let catalog = Arc::new(SagaCatalog::new());
-        catalog
-            .register_topic(TopicConfig {
-                name: "events".into(),
-                schema: vec![
-                    FieldDef {
-                        name: "timestamp".into(),
-                        data_type: FieldType::TimestampMillis,
-                        nullable: false,
-                    },
-                    FieldDef {
-                        name: "value".into(),
-                        data_type: FieldType::Int64,
-                        nullable: true,
-                    },
-                ],
-                sort_keys: vec!["timestamp".into()],
-                partition_granularity: PartitionGranularity::None,
-            })
-            .unwrap();
 
         let schema = Arc::new(Schema::new(vec![
             Field::new(
@@ -137,6 +118,13 @@ mod tests {
             ),
             Field::new("value", DataType::Int64, true),
         ]));
+
+        catalog.register_subject_local(
+            "events",
+            schema.clone(),
+            vec!["timestamp".into()],
+            PartitionGranularity::None,
+        ).unwrap();
 
         let mt = Arc::new(Memtable::new(schema.clone()));
         let ts = Arc::new(TimestampMillisecondArray::from(vec![100, 200, 300]));

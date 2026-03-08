@@ -2,8 +2,7 @@ use crate::config::SagaConfig;
 use crate::storage::memtable::Memtable;
 use crate::query::engine;
 use crate::storage::saga_catalog::SagaCatalog;
-use crate::types::TopicConfig;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -22,56 +21,19 @@ pub struct AppState {
 
 pub fn build_router(state: AppState) -> Router {
     Router::new()
-        .route("/v1/topics", post(create_topic).get(list_topics))
+        .route("/v1/subjects", get(list_subjects))
+        .route("/v1/subjects/{subject}/resolve", post(resolve_subject))
+        .route("/v1/subjects/{subject}/refresh", post(refresh_subject))
         .route("/v1/query", post(execute_query))
         .route("/v1/status", get(status))
         .with_state(state)
 }
 
-#[derive(Deserialize)]
-struct CreateTopicRequest {
-    #[serde(flatten)]
-    config: TopicConfig,
-}
-
-#[derive(Serialize)]
-struct CreateTopicResponse {
-    name: String,
-    status: String,
-}
-
-async fn create_topic(
-    State(state): State<AppState>,
-    Json(req): Json<CreateTopicRequest>,
-) -> impl IntoResponse {
-    let name = req.config.name.clone();
-    match state.catalog.register_topic(req.config) {
-        Ok(()) => {
-            info!(topic = %name, "topic created");
-            (
-                StatusCode::CREATED,
-                Json(CreateTopicResponse {
-                    name,
-                    status: "created".into(),
-                }),
-            )
-                .into_response()
-        }
-        Err(e) => (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e.to_string() }))
-            .into_response(),
-    }
-}
-
-#[derive(Serialize)]
-struct TopicInfo {
-    name: String,
-    fields: usize,
-}
-
-async fn list_topics(State(state): State<AppState>) -> impl IntoResponse {
-    let topics: Vec<TopicInfo> = state
+/// GET /v1/subjects — list locally-cached subjects.
+async fn list_subjects(State(state): State<AppState>) -> impl IntoResponse {
+    let subjects: Vec<SubjectInfo> = state
         .catalog
-        .list_topics()
+        .list_subjects()
         .into_iter()
         .map(|name| {
             let fields = state
@@ -79,10 +41,68 @@ async fn list_topics(State(state): State<AppState>) -> impl IntoResponse {
                 .schema(&name)
                 .map(|s| s.fields().len())
                 .unwrap_or(0);
-            TopicInfo { name, fields }
+            SubjectInfo { name, fields }
         })
         .collect();
-    Json(topics)
+    Json(subjects)
+}
+
+/// POST /v1/subjects/{subject}/resolve — resolve a subject from Lexicon (fetch schema).
+async fn resolve_subject(
+    State(state): State<AppState>,
+    Path(subject): Path<String>,
+) -> impl IntoResponse {
+    match state.catalog.resolve_schema(&subject).await {
+        Ok(schema) => {
+            let fields: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
+            info!(subject = %subject, "subject resolved from lexicon");
+            (
+                StatusCode::OK,
+                Json(ResolveResponse {
+                    subject,
+                    fields,
+                    status: "resolved".into(),
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /v1/subjects/{subject}/refresh — refresh a subject's schema from Lexicon.
+async fn refresh_subject(
+    State(state): State<AppState>,
+    Path(subject): Path<String>,
+) -> impl IntoResponse {
+    match state.catalog.refresh_schema(&subject).await {
+        Ok(schema) => {
+            let fields: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
+            info!(subject = %subject, "subject schema refreshed from lexicon");
+            (
+                StatusCode::OK,
+                Json(ResolveResponse {
+                    subject,
+                    fields,
+                    status: "refreshed".into(),
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Deserialize)]
@@ -155,9 +175,17 @@ fn column_value_to_json(
     }
 
     match col.data_type() {
+        DataType::Int32 => {
+            let arr = col.as_any().downcast_ref::<Int32Array>().unwrap();
+            serde_json::Value::Number(arr.value(row).into())
+        }
         DataType::Int64 => {
             let arr = col.as_any().downcast_ref::<Int64Array>().unwrap();
             serde_json::Value::Number(arr.value(row).into())
+        }
+        DataType::Float32 => {
+            let arr = col.as_any().downcast_ref::<Float32Array>().unwrap();
+            serde_json::json!(arr.value(row))
         }
         DataType::Float64 => {
             let arr = col.as_any().downcast_ref::<Float64Array>().unwrap();
@@ -178,20 +206,44 @@ fn column_value_to_json(
                 .unwrap();
             serde_json::Value::Number(arr.value(row).into())
         }
+        DataType::Timestamp(TimeUnit::Microsecond, _) => {
+            let arr = col
+                .as_any()
+                .downcast_ref::<TimestampMicrosecondArray>()
+                .unwrap();
+            serde_json::Value::Number(arr.value(row).into())
+        }
+        DataType::Date32 => {
+            let arr = col.as_any().downcast_ref::<Date32Array>().unwrap();
+            serde_json::Value::Number(arr.value(row).into())
+        }
         _ => serde_json::Value::String(format!("<unsupported: {:?}>", col.data_type())),
     }
 }
 
 #[derive(Serialize)]
+struct SubjectInfo {
+    name: String,
+    fields: usize,
+}
+
+#[derive(Serialize)]
+struct ResolveResponse {
+    subject: String,
+    fields: Vec<String>,
+    status: String,
+}
+
+#[derive(Serialize)]
 struct StatusResponse {
     status: String,
-    topics: usize,
+    subjects: usize,
 }
 
 async fn status(State(state): State<AppState>) -> impl IntoResponse {
     Json(StatusResponse {
         status: "ok".into(),
-        topics: state.catalog.list_topics().len(),
+        subjects: state.catalog.list_subjects().len(),
     })
 }
 
@@ -231,45 +283,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_topics_empty() {
+    async fn list_subjects_empty() {
         let app = build_router(test_state());
         let resp = app
             .oneshot(
                 Request::builder()
-                    .uri("/v1/topics")
+                    .uri("/v1/subjects")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn create_topic_endpoint() {
-        let state = test_state();
-        let app = build_router(state.clone());
-        let body = serde_json::json!({
-            "name": "events",
-            "schema": [
-                {"name": "timestamp", "data_type": "TimestampMillis", "nullable": false},
-                {"name": "value", "data_type": "Int64", "nullable": true}
-            ],
-            "sort_keys": ["timestamp"],
-            "partition_granularity": "Day"
-        });
-        let resp = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/topics")
-                    .header("Content-Type", "application/json")
-                    .body(Body::from(serde_json::to_string(&body).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::CREATED);
-        assert_eq!(state.catalog.list_topics().len(), 1);
     }
 }

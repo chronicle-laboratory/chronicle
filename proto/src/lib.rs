@@ -13,3 +13,6 @@ pub mod pb_admin {
 pub mod pb_saga {
     tonic::include_proto!("io.chronicle.proto.saga.v1");
 }
+pub mod pb_lexicon {
+    tonic::include_proto!("chronicle.lexicon");
+}

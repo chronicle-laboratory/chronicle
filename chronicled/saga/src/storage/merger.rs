@@ -34,9 +34,9 @@ impl Merger {
         Self { config, catalog, store }
     }
 
-    /// Check all topics/partitions for merge eligibility and merge if needed.
+    /// Check all subjects/partitions for merge eligibility and merge if needed.
     pub async fn check_and_merge(&self) -> Result<Option<MergeResult>> {
-        for topic in self.catalog.list_topics() {
+        for topic in self.catalog.list_subjects() {
             for partition in self.catalog.l0_partitions(&topic) {
                 let files = self.catalog.l0_files(&topic, &partition);
                 if files.len() >= self.config.merge_file_threshold {
@@ -54,7 +54,7 @@ impl Merger {
         partition: &str,
         files: Vec<L0FileMeta>,
     ) -> Result<MergeResult> {
-        let topic_config = self.catalog.topic_config(topic)?;
+        let sort_keys = self.catalog.sort_keys(topic);
         let schema = self.catalog.schema(topic)?;
 
         let bytes_before: usize = files.iter().map(|f| f.file_size).sum();
@@ -84,7 +84,7 @@ impl Merger {
 
         // Merge and sort.
         let merged = concat_batches(&schema, &all_batches)?;
-        let sorted = sort_batch(&merged, &schema, &topic_config.sort_keys)?;
+        let sorted = sort_batch(&merged, &schema, &sort_keys)?;
 
         // Write merged Parquet to a temp local file.
         let merged_filename = format!("merged-{}.parquet", uuid::Uuid::new_v4());
@@ -117,7 +117,7 @@ impl Merger {
             .await?;
 
         // Compute timestamp range.
-        let (min_ts, max_ts) = timestamp_range(&sorted, &topic_config.sort_keys);
+        let (min_ts, max_ts) = timestamp_range(&sorted, &sort_keys);
 
         let l1_meta = L1FileMeta {
             s3_path: s3_path.clone(),
@@ -209,7 +209,7 @@ fn timestamp_range(batch: &RecordBatch, sort_keys: &[String]) -> (i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{FieldDef, FieldType, PartitionGranularity, TopicConfig};
+    use crate::types::PartitionGranularity;
     use arrow::array::{Int64Array, TimestampMillisecondArray};
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use object_store::memory::InMemory;
@@ -219,18 +219,6 @@ mod tests {
             Field::new("timestamp", DataType::Timestamp(TimeUnit::Millisecond, None), false),
             Field::new("value", DataType::Int64, true),
         ]))
-    }
-
-    fn test_topic_config() -> TopicConfig {
-        TopicConfig {
-            name: "test".into(),
-            schema: vec![
-                FieldDef { name: "timestamp".into(), data_type: FieldType::TimestampMillis, nullable: false },
-                FieldDef { name: "value".into(), data_type: FieldType::Int64, nullable: true },
-            ],
-            sort_keys: vec!["timestamp".into()],
-            partition_granularity: PartitionGranularity::None,
-        }
     }
 
     #[tokio::test]
@@ -244,7 +232,12 @@ mod tests {
         };
 
         let catalog = Arc::new(SagaCatalog::new());
-        catalog.register_topic(test_topic_config()).unwrap();
+        catalog.register_subject_local(
+            "test",
+            test_schema(),
+            vec!["timestamp".into()],
+            PartitionGranularity::None,
+        ).unwrap();
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
 
         let schema = test_schema();

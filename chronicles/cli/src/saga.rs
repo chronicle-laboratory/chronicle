@@ -1,9 +1,9 @@
 use crate::banner;
 use crate::process;
+use chronicle_saga::config::SagaConfig;
 use chronicle_saga::saga::Saga;
-use tracing::{info, warn};
+use tracing::info;
 use std::io::IsTerminal;
-use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
 const DEFAULT_PID_FILE: &str = "chronicle-saga.pid";
@@ -12,7 +12,7 @@ const DEFAULT_PID_FILE: &str = "chronicle-saga.pid";
 pub enum SagaAction {
     /// Start the saga server
     Start {
-        /// Path to TOML configuration file
+        /// Path to TOML configuration file (reads [saga] section)
         #[arg(short, long)]
         config: Option<String>,
 
@@ -31,7 +31,12 @@ pub enum SagaAction {
 
 pub async fn run(action: SagaAction) -> Result<(), Box<dyn std::error::Error>> {
     match action {
-        SagaAction::Start { config: _config, pid_file } => {
+        SagaAction::Start { config: config_path, pid_file } => {
+            let config = match &config_path {
+                Some(path) => load_saga_config(path)?,
+                None => SagaConfig::default(),
+            };
+
             tracing_subscriber::fmt()
                 .with_env_filter(
                     EnvFilter::try_from_default_env()
@@ -48,29 +53,7 @@ pub async fn run(action: SagaAction) -> Result<(), Box<dyn std::error::Error>> {
 
             process::write_pid_file(&pid_file)?;
 
-            let catalog = loop {
-                let task = tokio::spawn(async move {
-                    catalog::build_catalog(&catalog::CatalogOptions::default()).await
-                });
-                tokio::select! {
-                    result = task => match result {
-                        Ok(Ok(c)) => break c,
-                        Ok(Err(e)) => {
-                            warn!(error = %e, "catalog connection failed, retrying in 5s");
-                            tokio::time::sleep(Duration::from_secs(5)).await;
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "catalog task panicked, retrying in 5s");
-                            tokio::time::sleep(Duration::from_secs(5)).await;
-                        }
-                    },
-                    _ = tokio::time::sleep(Duration::from_secs(15)) => {
-                        warn!("catalog connection timed out after 15s, retrying");
-                    }
-                }
-            };
-
-            let saga = Saga::new(catalog).await?;
+            let saga = Saga::with_config(config).await?;
 
             process::wait_for_shutdown().await;
 
@@ -88,4 +71,21 @@ pub async fn run(action: SagaAction) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+/// Load [saga] section from a TOML config file.
+fn load_saga_config(path: &str) -> Result<SagaConfig, Box<dyn std::error::Error>> {
+    let contents = std::fs::read_to_string(path)
+        .map_err(|e| format!("failed to read config file '{}': {}", path, e))?;
+    let table: toml::Value = toml::from_str(&contents)
+        .map_err(|e| format!("failed to parse config file '{}': {}", path, e))?;
+
+    match table.get("saga") {
+        Some(section) => {
+            let config: SagaConfig = section.clone().try_into()
+                .map_err(|e| format!("failed to parse [saga] section: {}", e))?;
+            Ok(config)
+        }
+        None => Ok(SagaConfig::default()),
+    }
 }
