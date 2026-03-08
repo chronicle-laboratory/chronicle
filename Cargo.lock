@@ -1246,25 +1246,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "chronicle-lexicon-client"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "async-trait",
- "base64",
- "chronicle-lexicon",
- "chronicle-proto",
- "chrono",
- "prost 0.13.5",
- "serde",
- "serde_json",
- "thiserror 2.0.17",
- "tokio",
- "tonic",
- "tracing",
-]
-
-[[package]]
 name = "chronicle-proto"
 version = "0.1.0"
 dependencies = [
@@ -1288,11 +1269,11 @@ dependencies = [
  "bytes",
  "catalog",
  "chronicle-lexicon",
- "chronicle-lexicon-client",
  "chronicle-proto",
  "chrono",
  "datafusion",
  "futures-util",
+ "libchronicle",
  "object_store",
  "parking_lot",
  "parquet",
@@ -3066,15 +3047,21 @@ checksum = "2874a2af47a2325c2001a6e6fad9b16a53b802102b528163885171cf92b15976"
 name = "libchronicle"
 version = "0.1.0"
 dependencies = [
+ "arrow",
  "async-stream",
  "async-trait",
+ "base64",
  "catalog",
+ "chronicle-lexicon",
  "chronicle-proto",
+ "chrono",
  "dashmap",
  "futures-util",
  "opentelemetry",
  "opentelemetry_sdk",
  "prost 0.13.5",
+ "serde",
+ "serde_json",
  "thiserror 2.0.17",
  "tokio",
  "tokio-stream",

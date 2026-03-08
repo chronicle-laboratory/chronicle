@@ -4,6 +4,7 @@ pub mod chronicle;
 pub mod client;
 pub mod error;
 pub mod cursor;
+pub mod lexicon_client;
 pub mod observability;
 pub mod writer;
 

@@ -6,7 +6,7 @@ use crate::storage::memtable::Memtable;
 use crate::storage::merger::Merger;
 use crate::storage::saga_catalog::SagaCatalog;
 use crate::server::http::{self, AppState};
-use chronicle_lexicon_client::LexiconClient;
+use libchronicle::lexicon_client::LexiconClient;
 use object_store::local::LocalFileSystem;
 use object_store::ObjectStore;
 use std::collections::HashMap;

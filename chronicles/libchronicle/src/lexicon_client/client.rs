@@ -6,8 +6,8 @@ use arrow::datatypes::SchemaRef;
 use tokio::sync::RwLock;
 use tonic::transport::Channel;
 
-use crate::arrow_convert::stored_schema_to_arrow;
-use crate::proto;
+use crate::lexicon_client::arrow_convert::stored_schema_to_arrow;
+use crate::lexicon_client::proto;
 use chronicle_lexicon::{SchemaRecord, StoredSchema, SubjectMeta, WireFormat};
 
 #[derive(Debug, thiserror::Error)]

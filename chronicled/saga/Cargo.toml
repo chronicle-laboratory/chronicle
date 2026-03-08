@@ -7,7 +7,7 @@ resolver = "3"
 [dependencies]
 chronicle-proto = { workspace = true }
 chronicle-lexicon = { path = "../lexicon" }
-chronicle-lexicon-client = { path = "../../clients/lexicon-client" }
+libchronicle = { path = "../../chronicles/libchronicle" }
 catalog = { path = "../../catalog" }
 async-trait = { workspace = true }
 tracing = { workspace = true }

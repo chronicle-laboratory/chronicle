@@ -1,7 +1,7 @@
 use crate::error::{Result, SagaError};
 use crate::types::{L0FileMeta, L1FileMeta, PartitionGranularity};
 use arrow::datatypes::{DataType, SchemaRef, TimeUnit};
-use chronicle_lexicon_client::LexiconClient;
+use libchronicle::lexicon_client::LexiconClient;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
