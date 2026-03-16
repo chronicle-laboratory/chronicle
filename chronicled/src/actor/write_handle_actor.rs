@@ -85,6 +85,7 @@ impl WriteActor {
                             payload: None,
                             crc32: None,
                             timestamp: -1,
+                            schema_id: 0,
                         })) {
                             warn!("Send response to client failed: {:?}", err);
                         }

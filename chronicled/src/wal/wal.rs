@@ -1,12 +1,14 @@
 use crate::error::unit_error::UnitError;
 use crate::option::unit_options::IoMode;
+use crate::segment::Segment;
+use crate::segment::direct::DirectSegment;
+use crate::segment::mmap::MmapSegment;
+use crate::segment::record::{Record, RecordBatch};
+use crate::segment::standard::StandardSegment;
 use crate::wal::INVALID_OFFSET;
-use crate::wal::direct_segment::DirectSegment;
-use crate::wal::record::{Record, RecordBatch};
-use crate::wal::segment::Segment;
 use async_stream::stream;
 use futures_util::stream::Stream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,48 +24,107 @@ use tokio::{sync, task};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-const DEFAULT_MAX_SEGMENT_SIZE: u64 = 64 * 1024 * 1024;
-const BATCH_FLUSH_INTERVAL_MS: u64 = 10;
+const BATCH_FLUSH_INTERVAL_MS: u64 = 1;
 const MAX_BATCH_SIZE: usize = 512;
+const DEFAULT_MAX_SEGMENT_SIZE: u64 = 64 * 1024 * 1024; // 64MB per WAL segment
 
-enum WalSegment {
-    Basic(Segment),
-    Direct(DirectSegment),
+/// Format a WAL segment filename: `{segment_id:08}.log`
+fn segment_filename(segment_id: u64) -> String {
+    format!("{:08}.log", segment_id)
 }
 
-impl WalSegment {
-    async fn write(&mut self, data: &[u8]) -> Result<u64, std::io::Error> {
-        match self {
-            WalSegment::Basic(s) => s.write(data).await,
-            WalSegment::Direct(s) => s.write(data).await,
+/// Parse a segment ID from a WAL filename.
+fn parse_segment_id(filename: &str) -> Option<u64> {
+    let stem = filename.strip_suffix(".log")?;
+    stem.parse::<u64>().ok()
+}
+
+/// Open a segment file at the given path with the specified IO mode.
+async fn open_segment(path: PathBuf, io_mode: IoMode) -> Result<Box<dyn Segment>, UnitError> {
+    match io_mode {
+        IoMode::Advanced => {
+            let ds = DirectSegment::new(path)
+                .await
+                .map_err(|e| UnitError::Storage(e.to_string()))?;
+            Ok(Box::new(ds))
+        }
+        IoMode::Basic => {
+            let s = StandardSegment::new(path)
+                .await
+                .map_err(|e| UnitError::Storage(e.to_string()))?;
+            Ok(Box::new(s))
+        }
+        IoMode::Mmap => {
+            let ms = MmapSegment::new(path)
+                .await
+                .map_err(|e| UnitError::Storage(e.to_string()))?;
+            Ok(Box::new(ms))
         }
     }
+}
 
-    async fn sync(&self) -> Result<(), std::io::Error> {
-        match self {
-            WalSegment::Basic(s) => s.sync().await,
-            WalSegment::Direct(s) => s.sync().await,
+/// Discover all WAL segment files in a directory, sorted by segment ID.
+fn discover_segments(dir: &Path) -> Vec<(u64, PathBuf)> {
+    let mut segments = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if let Some(name_str) = name.to_str() {
+                if let Some(id) = parse_segment_id(name_str) {
+                    segments.push((id, entry.path()));
+                }
+            }
         }
     }
+    segments.sort_by_key(|(id, _)| *id);
+    segments
+}
 
-    async fn read_all(&mut self) -> Result<Vec<u8>, std::io::Error> {
-        match self {
-            WalSegment::Basic(s) => s.read_all().await,
-            WalSegment::Direct(s) => s.read_all().await,
+struct WalState {
+    dir: PathBuf,
+    io_mode: IoMode,
+    max_segment_size: u64,
+    current_segment: Box<dyn Segment>,
+    current_segment_id: u64,
+}
+
+impl WalState {
+    /// Rotate to a new segment. Returns the new segment ID.
+    async fn rotate(&mut self) -> Result<u64, UnitError> {
+        // Sync current segment before rotating.
+        if let Err(e) = self.current_segment.sync().await {
+            warn!(error = ?e, "failed to sync segment before rotation");
         }
+
+        let new_id = self.current_segment_id + 1;
+        let path = self.dir.join(segment_filename(new_id));
+        let new_segment = open_segment(path, self.io_mode).await?;
+        self.current_segment = new_segment;
+        self.current_segment_id = new_id;
+        info!(segment_id = new_id, "wal rotated to new segment");
+        Ok(new_id)
+    }
+
+    /// Check if rotation is needed based on current segment size.
+    fn needs_rotation(&self, additional_bytes: usize) -> bool {
+        self.current_segment.offset() + additional_bytes as u64 > self.max_segment_size
+    }
+
+    /// Compute a globally monotonic offset from segment_id + local offset.
+    fn global_offset(&self, local_offset: u64) -> i64 {
+        ((self.current_segment_id as i64) << 32) | (local_offset as i64 & 0xFFFF_FFFF)
     }
 }
 
 struct Inner {
     buffer: sync::mpsc::Sender<(Vec<u8>, oneshot::Sender<i64>)>,
     synced_offset: Receiver<i64>,
-    writable_segment: Mutex<WalSegment>,
-    max_segment_size: u64,
+    state: Mutex<WalState>,
 }
 
 impl Inner {
     async fn sync_data(&self) {
-        if let Err(e) = self.writable_segment.lock().await.sync().await {
+        if let Err(e) = self.state.lock().await.current_segment.sync().await {
             warn!(error = ?e, "failed to sync writable segment");
         }
     }
@@ -81,6 +142,8 @@ pub struct Wal {
     inner: Arc<Inner>,
     wal_writer_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     wal_syncer_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+    dir: PathBuf,
+    io_mode: IoMode,
 }
 
 impl Wal {
@@ -90,7 +153,7 @@ impl Wal {
         let (advanced_offset_tx, advanced_offset_rx) = watch::channel(INVALID_OFFSET);
         let (synced_offset_tx, synced_offset_rx) = watch::channel(INVALID_OFFSET);
 
-        let mut path = PathBuf::from(&options.dir);
+        let dir = PathBuf::from(&options.dir);
 
         if let Err(e) = tokio::fs::create_dir_all(&options.dir).await {
             return Err(UnitError::Storage(format!(
@@ -99,31 +162,41 @@ impl Wal {
             )));
         }
 
-        path.push("00000000.log");
+        let max_segment_size = options.max_segment_size.unwrap_or(DEFAULT_MAX_SEGMENT_SIZE);
 
-        let segment = match options.io_mode {
-            IoMode::Advanced => {
-                let ds = DirectSegment::new(path)
-                    .await
-                    .map_err(|e| UnitError::Storage(e.to_string()))?;
-                WalSegment::Direct(ds)
-            }
-            IoMode::Basic => {
-                let s = Segment::new(path)
-                    .await
-                    .map_err(|e| UnitError::Storage(e.to_string()))?;
-                WalSegment::Basic(s)
-            }
+        // Discover existing segments or create the first one.
+        let existing = discover_segments(&dir);
+        let (current_segment_id, segment) = if let Some((last_id, last_path)) = existing.last() {
+            // Re-open the last (most recent) segment for appending.
+            let seg = open_segment(last_path.clone(), options.io_mode).await?;
+            (*last_id, seg)
+        } else {
+            // Fresh start — create segment 0.
+            let path = dir.join(segment_filename(0));
+            let seg = open_segment(path, options.io_mode).await?;
+            (0, seg)
         };
 
+        info!(
+            segment_id = current_segment_id,
+            segments_found = existing.len(),
+            "wal initialized with multi-segment support"
+        );
+
         let context = CancellationToken::new();
-        let max_segment_size = options.max_segment_size.unwrap_or(DEFAULT_MAX_SEGMENT_SIZE);
+
+        let wal_state = WalState {
+            dir: dir.clone(),
+            io_mode: options.io_mode,
+            max_segment_size,
+            current_segment: segment,
+            current_segment_id,
+        };
 
         let inner = Arc::new(Inner {
             buffer: buf_tx,
             synced_offset: synced_offset_rx,
-            writable_segment: Mutex::new(segment),
-            max_segment_size,
+            state: Mutex::new(wal_state),
         });
 
         let wal_writer_handle = task::spawn(bg_wal_writer(
@@ -143,6 +216,8 @@ impl Wal {
             inner,
             wal_writer_handle: Arc::new(Mutex::new(Some(wal_writer_handle))),
             wal_syncer_handle: Arc::new(Mutex::new(Some(wal_syncer_handle))),
+            dir,
+            io_mode: options.io_mode,
         })
     }
 
@@ -160,38 +235,98 @@ impl Wal {
         self.inner.synced_offset.clone()
     }
 
+    /// Read all WAL segments in order, yielding records from each.
+    /// Optionally starts from a given segment ID (for replay after checkpoint).
     pub async fn read_stream(
         &self,
     ) -> Pin<Box<dyn Stream<Item = Result<Vec<u8>, UnitError>> + Send + '_>> {
-        let mut segment = self.inner.writable_segment.lock().await;
-        let data_result = segment.read_all().await;
-        drop(segment);
+        self.read_stream_from(0).await
+    }
 
-        let data = match data_result {
-            Ok(d) => d,
-            Err(e) => {
-                return Box::pin(stream! {
-                    yield Err(UnitError::Storage(e.to_string()));
-                });
-            }
-        };
+    /// Read WAL records starting from a given segment ID.
+    pub async fn read_stream_from(
+        &self,
+        from_segment_id: u64,
+    ) -> Pin<Box<dyn Stream<Item = Result<Vec<u8>, UnitError>> + Send + '_>> {
+        let segments = discover_segments(&self.dir);
+        let io_mode = self.io_mode;
+
+        // Collect segment paths that are >= from_segment_id.
+        let replay_segments: Vec<(u64, PathBuf)> = segments
+            .into_iter()
+            .filter(|(id, _)| *id >= from_segment_id)
+            .collect();
 
         Box::pin(stream! {
-            let mut offset = 0;
-
-            while offset < data.len() {
-                match Record::decode(&data[offset..]) {
-                    Ok((record, size)) => {
-                        yield Ok(record.data);
-                        offset += size;
-                    }
+            for (seg_id, path) in replay_segments {
+                let seg_result = open_segment(path.clone(), io_mode).await;
+                let mut seg = match seg_result {
+                    Ok(s) => s,
                     Err(e) => {
-                        warn!(offset = offset, error = %e, "failed to decode wal record");
-                        break;
+                        warn!(segment_id = seg_id, error = ?e, "failed to open wal segment for replay");
+                        yield Err(e);
+                        return;
+                    }
+                };
+
+                let data = match seg.read_all().await {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(segment_id = seg_id, error = ?e, "failed to read wal segment");
+                        yield Err(UnitError::Storage(e.to_string()));
+                        return;
+                    }
+                };
+
+                let mut offset = 0;
+                while offset < data.len() {
+                    match Record::decode(&data[offset..]) {
+                        Ok((record, size)) => {
+                            yield Ok(record.data);
+                            offset += size;
+                        }
+                        Err(e) => {
+                            warn!(
+                                segment_id = seg_id,
+                                offset = offset,
+                                error = %e,
+                                "failed to decode wal record"
+                            );
+                            break;
+                        }
                     }
                 }
             }
         })
+    }
+
+    /// Trim WAL segments with IDs strictly less than the given segment ID.
+    /// Segments below this ID have been fully checkpointed and are safe to delete.
+    pub async fn trim(&self, below_segment_id: u64) -> Result<u64, UnitError> {
+        let segments = discover_segments(&self.dir);
+        let mut trimmed = 0u64;
+
+        for (seg_id, path) in segments {
+            if seg_id >= below_segment_id {
+                break;
+            }
+            match tokio::fs::remove_file(&path).await {
+                Ok(_) => {
+                    trimmed += 1;
+                    info!(segment_id = seg_id, "wal segment trimmed");
+                }
+                Err(e) => {
+                    warn!(segment_id = seg_id, error = ?e, "failed to trim wal segment");
+                }
+            }
+        }
+
+        Ok(trimmed)
+    }
+
+    /// Return the current active segment ID.
+    pub async fn current_segment_id(&self) -> u64 {
+        self.inner.state.lock().await.current_segment_id
     }
 
     pub fn cancel(&self) {
@@ -232,6 +367,17 @@ async fn bg_wal_writer(
                 pending_batch.add(record);
                 pending_senders.push(offset_tx);
 
+                // Greedily drain all immediately available records before flushing.
+                while pending_batch.len() < MAX_BATCH_SIZE {
+                    match buf_rx.try_recv() {
+                        Ok((data, tx)) => {
+                            pending_batch.add(Record::new(data));
+                            pending_senders.push(tx);
+                        }
+                        Err(_) => break,
+                    }
+                }
+
                 if pending_batch.len() >= MAX_BATCH_SIZE {
                     let batch = std::mem::replace(&mut pending_batch, RecordBatch::new());
                     let senders = std::mem::take(&mut pending_senders);
@@ -270,13 +416,27 @@ async fn flush_batch(
         }
     };
 
-    let mut segment = inner.writable_segment.lock().await;
+    let mut state = inner.state.lock().await;
 
-    match segment.write(&encoded).await {
+    // Check if we need to rotate before writing.
+    if state.needs_rotation(encoded.len()) {
+        if let Err(e) = state.rotate().await {
+            warn!(error = ?e, "failed to rotate wal segment");
+            return;
+        }
+    }
+
+    let encoded_len = encoded.len();
+    match state.current_segment.write(&encoded).await {
         Ok(base_offset) => {
-            let base_offset = base_offset as i64;
+            if let Some(m) = crate::observability::global_metrics() {
+                m.wal_writes.add(1, &[]);
+                m.wal_bytes.add(encoded_len as u64, &[]);
+            }
 
-            let mut current_offset = base_offset;
+            let global_base = state.global_offset(base_offset);
+
+            let mut current_offset = global_base;
             for (sender, size) in senders.into_iter().zip(record_sizes.iter()) {
                 if sender.send(current_offset).is_err() {
                     warn!("failed to send offset back to caller");
@@ -284,7 +444,7 @@ async fn flush_batch(
                 current_offset += *size as i64;
             }
 
-            let final_offset = base_offset + encoded.len() as i64;
+            let final_offset = global_base + encoded_len as i64;
             if advanced_offset_tx.send(final_offset).is_err() {
                 warn!("no active subscriber for advanced offset");
             }
@@ -304,7 +464,11 @@ async fn bg_wal_syncer(
         match advanced_offset_rx.changed().await {
             Ok(_) => {
                 let advanced_offset = *advanced_offset_rx.borrow();
+                let start = std::time::Instant::now();
                 inner.sync_data().await;
+                if let Some(m) = crate::observability::global_metrics() {
+                    m.wal_sync_latency.record(start.elapsed().as_secs_f64(), &[]);
+                }
                 if let Err(err) = synced_offset_tx.send(advanced_offset) {
                     warn!(error = ?err, "no active subscriber for synced offset");
                 }

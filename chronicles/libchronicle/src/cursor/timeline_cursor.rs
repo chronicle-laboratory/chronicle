@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use tracing::warn;
 
 type EventStream = Pin<Box<dyn Stream<Item = Result<(Offset, Vec<u8>), ChronicleError>> + Send>>;
 
@@ -124,31 +125,53 @@ impl TimelineCursor {
     }
 }
 
+const MAX_CURSOR_RETRIES: usize = 5;
+
 #[async_trait::async_trait]
 impl Cursor for TimelineCursor {
     async fn fetch(&mut self) -> Result<Option<(Offset, Vec<u8>)>, ChronicleError> {
-        if self.stream.is_none() {
-            self.stream = Some(
-                Self::open_stream(
-                    self.timeline_id,
-                    &self.segments,
-                    &self.unit_clients,
-                    &self.position,
-                )
-                .await?,
-            );
-        }
+        let mut retries = 0;
+        loop {
+            if self.stream.is_none() {
+                self.stream = Some(
+                    Self::open_stream(
+                        self.timeline_id,
+                        &self.segments,
+                        &self.unit_clients,
+                        &self.position,
+                    )
+                    .await?,
+                );
+            }
 
-        let stream = self.stream.as_mut().unwrap();
-        match stream.next().await {
-            Some(Ok(item)) => Ok(Some(item)),
-            Some(Err(e)) => Err(e),
-            None => Ok(None),
+            let stream = self.stream.as_mut().unwrap();
+            match stream.next().await {
+                Some(Ok(item)) => return Ok(Some(item)),
+                Some(Err(e)) => {
+                    retries += 1;
+                    if retries > MAX_CURSOR_RETRIES {
+                        return Err(e);
+                    }
+                    warn!(
+                        error = %e,
+                        retry = retries,
+                        "fetch stream error, reconnecting"
+                    );
+                    self.stream = None;
+                    let backoff = std::time::Duration::from_millis(100 * (1 << retries.min(5)));
+                    tokio::time::sleep(backoff).await;
+                }
+                None => return Ok(None),
+            }
         }
     }
 
     fn seek(&mut self, offset: i64) {
         self.position.store(offset, Ordering::Relaxed);
         self.stream = None;
+    }
+
+    fn position(&self) -> i64 {
+        self.position.load(Ordering::Relaxed)
     }
 }

@@ -1,3 +1,4 @@
+use super::Segment;
 use std::fs::{File, OpenOptions};
 use std::io::Error;
 use std::path::PathBuf;
@@ -136,8 +137,11 @@ impl DirectSegment {
             buf: AlignedBuffer::new(PAGE_SIZE * 4),
         })
     }
+}
 
-    pub async fn write(&mut self, data: &[u8]) -> Result<u64, Error> {
+#[async_trait::async_trait]
+impl Segment for DirectSegment {
+    async fn write(&mut self, data: &[u8]) -> Result<u64, Error> {
         let offset_before = self.write_offset;
         let data_len = data.len() as u64;
 
@@ -161,22 +165,14 @@ impl DirectSegment {
         Ok(offset_before)
     }
 
-    pub async fn sync(&self) -> Result<(), Error> {
+    async fn sync(&self) -> Result<(), Error> {
         let file = self.file.try_clone()?;
         tokio::task::spawn_blocking(move || file.sync_data())
             .await
             .unwrap()
     }
 
-    pub fn offset(&self) -> u64 {
-        self.write_offset
-    }
-
-    pub fn size(&self) -> u64 {
-        self.write_offset
-    }
-
-    pub async fn read_all(&mut self) -> Result<Vec<u8>, Error> {
+    async fn read_all(&mut self) -> Result<Vec<u8>, Error> {
         let path = self.path.clone();
         let len = self.write_offset as usize;
         tokio::task::spawn_blocking(move || {
@@ -188,6 +184,19 @@ impl DirectSegment {
         })
         .await
         .unwrap()
+    }
+
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> Result<(), std::io::Error> {
+        use std::os::unix::fs::FileExt;
+        self.file.read_exact_at(buf, offset)
+    }
+
+    fn offset(&self) -> u64 {
+        self.write_offset
+    }
+
+    fn size(&self) -> u64 {
+        self.write_offset
     }
 }
 

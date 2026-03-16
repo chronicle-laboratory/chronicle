@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use chronicle_proto::pb_catalog::{TimelineCatalog, UnitRegistration};
-use chronicle_proto::pb_logic::Schema;
 use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -15,7 +14,6 @@ use crate::error::CatalogError;
 /// All state lives in process memory and is lost on drop.
 pub struct MemoryCatalog {
     timelines: Mutex<HashMap<String, TimelineCatalog>>,
-    schemas: Mutex<HashMap<String, Vec<Schema>>>,
     units: DashMap<String, UnitRegistration>,
     next_timeline_id: AtomicI64,
     next_version: AtomicI64,
@@ -25,7 +23,6 @@ impl MemoryCatalog {
     pub fn new() -> Self {
         Self {
             timelines: Mutex::new(HashMap::new()),
-            schemas: Mutex::new(HashMap::new()),
             units: DashMap::new(),
             next_timeline_id: AtomicI64::new(1),
             next_version: AtomicI64::new(1),
@@ -92,74 +89,17 @@ impl Catalog for MemoryCatalog {
         Ok(tc)
     }
 
-    async fn list_timelines(&self) -> Result<Vec<TimelineCatalog>, CatalogError> {
-        Ok(self.timelines.lock().unwrap().values().cloned().collect())
-    }
-
-    // ── Schema operations ───────────────────────────────────────────────
-
-    async fn create_schema(&self, schema: &Schema) -> Result<Schema, CatalogError> {
-        let mut store = self.schemas.lock().unwrap();
-        if store.contains_key(&schema.name) {
-            return Err(CatalogError::AlreadyExists(schema.name.clone()));
-        }
-        let mut created = schema.clone();
-        created.version = 1;
-        created.created_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
-        store.insert(schema.name.clone(), vec![created.clone()]);
-        Ok(created)
-    }
-
-    async fn get_schema(&self, name: &str, version: Option<i32>) -> Result<Schema, CatalogError> {
-        let store = self.schemas.lock().unwrap();
-        let versions = store
-            .get(name)
-            .ok_or_else(|| CatalogError::NotFound(name.to_string()))?;
-        match version {
-            Some(v) => versions
-                .iter()
-                .find(|s| s.version == v)
-                .cloned()
-                .ok_or_else(|| CatalogError::NotFound(format!("{}@v{}", name, v))),
-            None => versions
-                .last()
-                .cloned()
-                .ok_or_else(|| CatalogError::NotFound(name.to_string())),
-        }
-    }
-
-    async fn update_schema(&self, schema: &Schema) -> Result<Schema, CatalogError> {
-        let mut store = self.schemas.lock().unwrap();
-        let versions = store
-            .get_mut(&schema.name)
-            .ok_or_else(|| CatalogError::NotFound(schema.name.clone()))?;
-        let current = versions
-            .last()
-            .ok_or_else(|| CatalogError::NotFound(schema.name.clone()))?;
-        let mut updated = schema.clone();
-        updated.version = current.version + 1;
-        updated.created_at = current.created_at;
-        versions.push(updated.clone());
-        Ok(updated)
-    }
-
-    async fn delete_schema(&self, name: &str) -> Result<(), CatalogError> {
-        let mut store = self.schemas.lock().unwrap();
-        store
+    async fn delete_timeline(&self, name: &str) -> Result<(), CatalogError> {
+        self.timelines
+            .lock()
+            .unwrap()
             .remove(name)
             .map(|_| ())
             .ok_or_else(|| CatalogError::NotFound(name.to_string()))
     }
 
-    async fn list_schemas(&self) -> Result<Vec<Schema>, CatalogError> {
-        let store = self.schemas.lock().unwrap();
-        Ok(store
-            .values()
-            .filter_map(|versions| versions.last().cloned())
-            .collect())
+    async fn list_timelines(&self) -> Result<Vec<TimelineCatalog>, CatalogError> {
+        Ok(self.timelines.lock().unwrap().values().cloned().collect())
     }
 
     // ── Unit operations ──────────────────────────────────────────────────
@@ -226,6 +166,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn timeline_delete() {
+        let catalog = MemoryCatalog::new();
+        catalog.create_timeline("t1").await.unwrap();
+
+        catalog.delete_timeline("t1").await.unwrap();
+        let err = catalog.get_timeline("t1").await.unwrap_err();
+        assert!(matches!(err, CatalogError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn timeline_delete_not_found() {
+        let catalog = MemoryCatalog::new();
+        let err = catalog.delete_timeline("missing").await.unwrap_err();
+        assert!(matches!(err, CatalogError::NotFound(_)));
+    }
+
+    #[tokio::test]
     async fn unit_register_list_unregister() {
         use chronicle_proto::pb_catalog::UnitStatus;
 
@@ -254,34 +211,5 @@ mod tests {
         let catalog = MemoryCatalog::new();
         let err = catalog.unregister_unit("http://missing:1234").await.unwrap_err();
         assert!(matches!(err, CatalogError::NotFound(_)));
-    }
-
-    #[tokio::test]
-    async fn schema_lifecycle() {
-        let catalog = MemoryCatalog::new();
-
-        let schema = Schema {
-            name: "s1".into(),
-            definition: "{}".into(),
-            ..Default::default()
-        };
-        let created = catalog.create_schema(&schema).await.unwrap();
-        assert_eq!(created.version, 1);
-
-        let fetched = catalog.get_schema("s1", None).await.unwrap();
-        assert_eq!(fetched.version, 1);
-
-        let updated = catalog.update_schema(&schema).await.unwrap();
-        assert_eq!(updated.version, 2);
-
-        let v1 = catalog.get_schema("s1", Some(1)).await.unwrap();
-        assert_eq!(v1.version, 1);
-
-        let all = catalog.list_schemas().await.unwrap();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].version, 2);
-
-        catalog.delete_schema("s1").await.unwrap();
-        assert!(catalog.get_schema("s1", None).await.is_err());
     }
 }

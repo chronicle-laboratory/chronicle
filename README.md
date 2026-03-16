@@ -1,11 +1,25 @@
-<img src="docs/logo-min.png" alt="Chronicle" width="200" align="right">
+<img src="logo.svg" alt="Chronicle" width="180" align="left">
 
-## Chronicle
+<h3>Chronicle</h3>
 
-A distributed indexing stream system built in Rust.
+Modern distributed indexed streaming system.
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2024%20edition-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
 [![Stars](https://img.shields.io/github/stars/chronicle-laboratory/chronicle?style=flat-square&logo=github)](https://github.com/chronicle-laboratory/chronicle)
 
-<br clear="right">
+<br clear="left">
+
+## Features
+
+- **Streaming API** — Simple `record` and `fetch` operations
+- **Key-based events** — Record and fetch events by key with indexed lookups
+- **Secondary offset** — Look up events by both primary offset and secondary index
+- **Transactions** — Atomic writes across multiple keys
+- **Native schema** — Schema enforcement built into the core
+- **Replication** — Full replication with all-ack durability guarantee
+- **Auto rebalancing** — Seamless cluster scaling without downtime
+- **Placement policies** — Rack-aware and zone-aware replica placement
+- **Native offloading** — Tiered storage with automatic offload to object store
+- **TLA+ verified** — Formal verification for correctness
+- **Rust core, C ABI** — Built in Rust, exposes C ABI for multi-language bindings

@@ -4,7 +4,6 @@ pub mod oxia_catalog;
 
 use async_trait::async_trait;
 use chronicle_proto::pb_catalog::{TimelineCatalog, UnitRegistration};
-use chronicle_proto::pb_logic::Schema;
 use error::CatalogError;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -20,14 +19,8 @@ pub trait Catalog: Send + Sync {
         expected_version: i64,
     ) -> Result<TimelineCatalog, CatalogError>;
     async fn create_timeline(&self, name: &str) -> Result<TimelineCatalog, CatalogError>;
+    async fn delete_timeline(&self, name: &str) -> Result<(), CatalogError>;
     async fn list_timelines(&self) -> Result<Vec<TimelineCatalog>, CatalogError>;
-
-    // Schema operations
-    async fn create_schema(&self, schema: &Schema) -> Result<Schema, CatalogError>;
-    async fn get_schema(&self, name: &str, version: Option<i32>) -> Result<Schema, CatalogError>;
-    async fn update_schema(&self, schema: &Schema) -> Result<Schema, CatalogError>;
-    async fn delete_schema(&self, name: &str) -> Result<(), CatalogError>;
-    async fn list_schemas(&self) -> Result<Vec<Schema>, CatalogError>;
 
     // Unit operations
     async fn register_unit(
