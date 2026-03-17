@@ -24,8 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let o3 = timeline
         .record(
             Event::new(b"keyed event".to_vec())
-                .with_key(b"user-123".to_vec())
-                .with_schema_id(1),
+                .with_key(b"user-123".to_vec()),
         )
         .await?;
     println!("recorded keyed event at offset: {}", o3.0);

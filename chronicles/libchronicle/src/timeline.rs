@@ -76,7 +76,7 @@ impl Timeline {
         };
 
         let sm = Arc::new(
-            StateMachine::open(&catalog, &conns, name, &tc, rf).await?
+            StateMachine::open(&catalog, &conns, name, &tc, rf, options.schema_id).await?
         );
 
         let (event_tx, event_rx) = mpsc::channel::<PendingEvent>(options.max_batch_size * 2);

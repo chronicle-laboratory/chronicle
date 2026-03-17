@@ -16,7 +16,6 @@ pub struct Event {
     pub timestamp: Option<i64>,
     pub payload: Vec<u8>,
     pub key: Option<Vec<u8>>,
-    pub schema_id: Option<i64>,
     pub txn_id: Option<i64>,
 }
 
@@ -27,18 +26,12 @@ impl Event {
             timestamp: None,
             payload,
             key: None,
-            schema_id: None,
             txn_id: None,
         }
     }
 
     pub fn with_key(mut self, key: Vec<u8>) -> Self {
         self.key = Some(key);
-        self
-    }
-
-    pub fn with_schema_id(mut self, schema_id: i64) -> Self {
-        self.schema_id = Some(schema_id);
         self
     }
 
@@ -122,6 +115,7 @@ const DEFAULT_LINGER: std::time::Duration = std::time::Duration::from_millis(5);
 #[derive(Debug, Clone)]
 pub struct TimelineOptions {
     pub(crate) replication_factor: usize,
+    pub(crate) schema_id: Option<i64>,
     pub(crate) retention: Option<std::time::Duration>,
     pub(crate) compaction: bool,
     pub(crate) max_batch_size: usize,
@@ -132,6 +126,7 @@ impl Default for TimelineOptions {
     fn default() -> Self {
         Self {
             replication_factor: DEFAULT_REPLICATION_FACTOR,
+            schema_id: None,
             retention: None,
             compaction: false,
             max_batch_size: DEFAULT_BATCH_SIZE,
@@ -143,6 +138,11 @@ impl Default for TimelineOptions {
 impl TimelineOptions {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn schema_id(mut self, id: i64) -> Self {
+        self.schema_id = Some(id);
+        self
     }
 
     pub fn replication_factor(mut self, rf: usize) -> Self {

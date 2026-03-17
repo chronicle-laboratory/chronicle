@@ -135,7 +135,6 @@ impl EventStream {
                         timestamp: Some(proto_event.timestamp),
                         payload: proto_event.payload.map(|b| b.to_vec()).unwrap_or_default(),
                         key: None,
-                        schema_id: if proto_event.schema_id != 0 { Some(proto_event.schema_id) } else { None },
                         txn_id: None,
                     };
                     position.store(proto_event.offset + 1, Ordering::Relaxed);
