@@ -2,7 +2,7 @@ use crate::conn::{ConnOptions, ConnPool};
 use crate::cursor::EventStream;
 use crate::error::ChronicleError;
 use crate::observability::ClientMetrics;
-use crate::timeline::{self, Timeline};
+use crate::timeline::Timeline;
 use catalog::Catalog;
 use chronicle_proto::pb_catalog::{TimelineStatus, UnitStatus};
 use opentelemetry::metrics::Meter;
@@ -118,19 +118,11 @@ impl Chronicle {
     }
 
     pub async fn open_timeline(&self, name: &str) -> Result<Timeline, ChronicleError> {
-        let tc = self.catalog.get_timeline(name).await?;
-        if tc.status() == TimelineStatus::Sealed {
-            return Err(ChronicleError::Sealed(name.to_string()));
-        }
         let conns = self.resolve_unit_conns().await?;
-        let reconciled =
-            timeline::reconcile(&*self.catalog, &conns, name).await?;
-
         Timeline::open(
-            reconciled,
+            &*self.catalog,
             &conns,
             name,
-            tc.timeline_id,
             self.options.replication_factor,
         )
         .await

@@ -3,8 +3,10 @@ use crate::error::ChronicleError;
 pub mod chronicle;
 pub mod conn;
 pub mod cursor;
+pub mod ensemble;
 pub mod error;
 pub mod observability;
+pub mod replicator;
 pub mod timeline;
 
 #[derive(Debug, Clone)]
