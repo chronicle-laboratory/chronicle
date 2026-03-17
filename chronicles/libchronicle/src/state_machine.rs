@@ -186,6 +186,17 @@ impl StateMachine {
         })
     }
 
+    pub async fn close(&self) {
+        {
+            let mut s = self.inner.lock().unwrap();
+            s.senders.clear();
+        }
+        for task in &self.ack_tasks {
+            task.abort();
+            let _ = task;
+        }
+    }
+
     pub fn lra(&self) -> i64 {
         self.inner.lock().unwrap().lra
     }

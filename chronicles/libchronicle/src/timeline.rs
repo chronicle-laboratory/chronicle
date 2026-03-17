@@ -8,24 +8,23 @@ use crate::{Event as UserEvent, FetchOptions, Offset, StartPosition, TimelineOpt
 use catalog::Catalog;
 use chronicle_proto::pb_catalog::{Segment, TimelineStatus, UnitStatus};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 use tracing::info;
 
+struct TimelineInner {
+    event_tx: Option<mpsc::Sender<PendingEvent>>,
+    group_task: Option<tokio::task::JoinHandle<()>>,
+}
+
 pub struct Timeline {
     timeline_id: i64,
+    name: String,
     conns: HashMap<String, Conn>,
     #[allow(dead_code)]
     options: TimelineOptions,
     sm: Arc<StateMachine>,
-    event_tx: mpsc::Sender<PendingEvent>,
-    _group_task: tokio::task::JoinHandle<()>,
-}
-
-impl Drop for Timeline {
-    fn drop(&mut self) {
-        self._group_task.abort();
-    }
+    inner: Mutex<TimelineInner>,
 }
 
 impl Timeline {
@@ -92,12 +91,28 @@ impl Timeline {
 
         Ok(Self {
             timeline_id: tc.timeline_id,
+            name: name.to_string(),
             conns,
             options,
             sm,
-            event_tx,
-            _group_task: group_task,
+            inner: Mutex::new(TimelineInner {
+                event_tx: Some(event_tx),
+                group_task: Some(group_task),
+            }),
         })
+    }
+
+    pub async fn close(&self) {
+        let task = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.event_tx.take();
+            inner.group_task.take()
+        };
+        if let Some(task) = task {
+            let _ = task.await;
+        }
+        self.sm.close().await;
+        info!(timeline_id = self.timeline_id, "timeline closed");
     }
 
     pub fn fetch(&self, opts: FetchOptions) -> EventStream {
@@ -132,8 +147,13 @@ impl Timeline {
 #[async_trait::async_trait]
 impl Writer for Timeline {
     async fn record(&self, event: UserEvent) -> Result<Offset, ChronicleError> {
+        let sender = {
+            let inner = self.inner.lock().unwrap();
+            inner.event_tx.clone()
+                .ok_or_else(|| ChronicleError::Internal("timeline closed".into()))?
+        };
         let (tx, rx) = oneshot::channel();
-        self.event_tx
+        sender
             .send(PendingEvent { event, tx })
             .await
             .map_err(|_| ChronicleError::Internal("timeline closed".into()))?;

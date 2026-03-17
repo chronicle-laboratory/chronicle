@@ -1,16 +1,15 @@
 use crate::conn::{ConnOptions, ConnPool};
 use crate::error::ChronicleError;
-use crate::observability::ClientMetrics;
 use crate::timeline::Timeline;
 use crate::TimelineOptions;
 use catalog::Catalog;
 use opentelemetry::metrics::Meter;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::info;
 
 pub struct ChronicleOptions {
     pub(crate) conn_opts: ConnOptions,
+    #[allow(dead_code)]
     meter: Option<Meter>,
 }
 
@@ -62,8 +61,6 @@ impl ChronicleOptions {
 pub struct Chronicle {
     catalog: Arc<Catalog>,
     pool: Arc<ConnPool>,
-    #[allow(dead_code)]
-    metrics: Arc<ClientMetrics>,
 }
 
 impl Chronicle {
@@ -71,15 +68,9 @@ impl Chronicle {
         catalog: Arc<Catalog>,
         options: ChronicleOptions,
     ) -> Self {
-        let metrics = match &options.meter {
-            Some(meter) => Arc::new(ClientMetrics::new(meter)),
-            None => Arc::new(ClientMetrics::noop()),
-        };
-
         Self {
             pool: Arc::new(ConnPool::new(options.conn_opts.clone())),
             catalog,
-            metrics,
         }
     }
 
@@ -95,7 +86,6 @@ impl Chronicle {
 
     pub async fn drop_timeline(&self, name: &str) -> Result<(), ChronicleError> {
         self.catalog.delete_timeline(name).await?;
-        info!(name, "timeline dropped");
         Ok(())
     }
 }
