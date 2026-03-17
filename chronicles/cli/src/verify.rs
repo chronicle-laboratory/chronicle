@@ -1,6 +1,6 @@
 use libchronicle::chronicle::{Chronicle, ChronicleOptions};
 use futures_util::StreamExt;
-use libchronicle::{Event, Writer};
+use libchronicle::{Event, FetchOptions, Writer};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -226,7 +226,7 @@ pub async fn run(args: VerifyArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut timelines = Vec::new();
     for i in 0..args.timelines {
         let name = format!("verify-{}", i);
-        let timeline = match chronicle.create_timeline(&name).await {
+        let timeline = match chronicle.open_timeline(&name).await {
             Ok(t) => t,
             Err(create_err) => {
                 info!(timeline = name, error = %create_err, "create failed, trying open");
@@ -302,8 +302,8 @@ pub async fn run(args: VerifyArgs) -> Result<(), Box<dyn std::error::Error>> {
             let name = format!("verify-{}", i);
 
             let mut stream = loop {
-                match chronicle.open_stream(&name).await {
-                    Ok(s) => break s,
+                match chronicle.open_timeline(&name).await {
+                    Ok(t) => break t.fetch(FetchOptions::earliest()),
                     Err(_) => {
                         tokio::time::sleep(Duration::from_secs(1)).await;
                         if !reading.load(Ordering::Relaxed) {

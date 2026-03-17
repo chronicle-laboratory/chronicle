@@ -1,10 +1,11 @@
-use crate::conn::Conn;
+use crate::conn::ConnPool;
+use crate::cursor::EventStream;
 use crate::ensemble;
 use crate::error::ChronicleError;
 use crate::replicator::Replicator;
-use crate::{Event as UserEvent, Offset, Writer};
+use crate::{Event as UserEvent, FetchOptions, Offset, StartPosition, Writer};
 use catalog::Catalog;
-use chronicle_proto::pb_catalog::{Segment, TimelineStatus};
+use chronicle_proto::pb_catalog::{Segment, TimelineStatus, UnitStatus};
 use chronicle_proto::pb_ext::{Event, RecordEventsRequestItem};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,6 +22,9 @@ struct PendingEvent {
 }
 
 pub struct Timeline {
+    timeline_id: i64,
+    segments: Vec<Segment>,
+    conns: HashMap<String, crate::conn::Conn>,
     event_tx: mpsc::Sender<PendingEvent>,
     _group_task: tokio::task::JoinHandle<()>,
     _replicator: Arc<Replicator>,
@@ -33,69 +37,67 @@ impl Drop for Timeline {
 }
 
 impl Timeline {
-    pub async fn create(
-        catalog: &Catalog,
-        conns: &HashMap<String, Conn>,
+    pub async fn open(
+        catalog: Arc<Catalog>,
+        pool: Arc<ConnPool>,
         name: &str,
         replication_factor: usize,
     ) -> Result<Self, ChronicleError> {
-        let tc = catalog.create_timeline(name).await?;
+        let conns = resolve_conns(&catalog, &pool).await?;
 
-        let available: Vec<String> = conns.keys().cloned().collect();
-        let ens = ensemble::select(&available, &[], &[], replication_factor).ok_or_else(|| {
-            ChronicleError::EnsembleUnavailable(format!(
-                "need {} units, have {}",
-                replication_factor,
-                available.len()
-            ))
-        })?;
+        match catalog.get_timeline(name).await {
+            Ok(tc) => {
+                let replicator = Arc::new(
+                    Replicator::open(&catalog, &conns, name, replication_factor).await?,
+                );
+                let segments = catalog.get_timeline(name).await?.segments;
+                Self::start(tc.timeline_id, segments, conns, replicator)
+            }
+            Err(catalog::error::CatalogError::NotFound(_)) => {
+                let tc = catalog.create_timeline(name).await?;
 
-        let first_segment = Segment {
-            id: 1,
-            ensemble: ens.clone(),
-            start_offset: 1,
-        };
+                let available: Vec<String> = conns.keys().cloned().collect();
+                let ens = ensemble::select(&available, &[], &[], replication_factor)
+                    .ok_or_else(|| {
+                        ChronicleError::EnsembleUnavailable(format!(
+                            "need {} units, have {}",
+                            replication_factor,
+                            available.len()
+                        ))
+                    })?;
 
-        let mut updated = tc.clone();
-        updated.status = TimelineStatus::Active as i32;
-        updated.segments = vec![first_segment.clone()];
-        updated.term = 1;
-        let updated = catalog.put_timeline(&updated, tc.version).await?;
+                let first_segment = Segment {
+                    id: 1,
+                    ensemble: ens.clone(),
+                    start_offset: 1,
+                };
 
-        info!(
-            timeline = name,
-            timeline_id = updated.timeline_id,
-            ensemble = ?ens,
-            "timeline created"
-        );
+                let mut updated = tc.clone();
+                updated.status = TimelineStatus::Active as i32;
+                updated.segments = vec![first_segment.clone()];
+                updated.term = 1;
+                let updated = catalog.put_timeline(&updated, tc.version).await?;
 
-        let replicator = Arc::new(
-            Replicator::create(updated.timeline_id, replication_factor, &first_segment, conns).await?,
-        );
+                info!(
+                    timeline = name,
+                    timeline_id = updated.timeline_id,
+                    ensemble = ?ens,
+                    "timeline created"
+                );
 
-        Self::start(updated.timeline_id, replicator)
-    }
-
-    pub(crate) async fn open(
-        catalog: &Catalog,
-        conns: &HashMap<String, Conn>,
-        name: &str,
-        replication_factor: usize,
-    ) -> Result<Self, ChronicleError> {
-        let tc = catalog.get_timeline(name).await?;
-        if tc.status() == TimelineStatus::Sealed {
-            return Err(ChronicleError::Sealed(name.to_string()));
+                let replicator = Arc::new(
+                    Replicator::create(updated.timeline_id, replication_factor, &first_segment, &conns).await?,
+                );
+                Self::start(updated.timeline_id, updated.segments, conns, replicator)
+            }
+            Err(e) => Err(e.into()),
         }
-
-        let replicator = Arc::new(
-            Replicator::open(catalog, conns, name, replication_factor).await?,
-        );
-
-        Self::start(tc.timeline_id, replicator)
     }
 
     fn start(
         timeline_id: i64,
+        segments: Vec<Segment>,
+        conns: HashMap<String, crate::conn::Conn>,
         replicator: Arc<Replicator>,
     ) -> Result<Self, ChronicleError> {
         let (event_tx, event_rx) = mpsc::channel::<PendingEvent>(DEFAULT_BATCH_SIZE * 2);
@@ -106,10 +108,44 @@ impl Timeline {
         });
 
         Ok(Self {
+            timeline_id,
+            segments,
+            conns,
             event_tx,
             _group_task: group_task,
             _replicator: replicator,
         })
+    }
+
+    pub fn fetch(&self, opts: FetchOptions) -> EventStream {
+        let start_offset = match opts.start {
+            StartPosition::Earliest => 1,
+            StartPosition::Latest => {
+                let s = self._replicator.state().lock().unwrap();
+                s.lra + 1
+            }
+            StartPosition::Offset(o) => o,
+            StartPosition::Index { .. } => 1, // TODO: index lookup
+        };
+
+        let mut stream = EventStream::new(
+            self.timeline_id,
+            self.segments.clone(),
+            &self.conns,
+            start_offset,
+        );
+
+        if let Some(limit) = opts.limit {
+            stream = stream.with_limit(limit);
+        }
+        if let Some(timeout) = opts.timeout {
+            stream = stream.with_timeout(timeout);
+        }
+        if opts.limit.is_none() && opts.timeout.is_none() {
+            stream = stream.with_tail();
+        }
+
+        stream
     }
 }
 
@@ -124,6 +160,20 @@ impl Writer for Timeline {
         rx.await
             .map_err(|_| ChronicleError::Internal("ack channel dropped".into()))?
     }
+}
+
+async fn resolve_conns(
+    catalog: &Catalog,
+    pool: &ConnPool,
+) -> Result<HashMap<String, crate::conn::Conn>, ChronicleError> {
+    let registrations = catalog.list_units().await?;
+    let mut conns = HashMap::new();
+    for reg in &registrations {
+        if reg.status() == UnitStatus::Writable {
+            conns.insert(reg.address.clone(), pool.get_or_connect(&reg.address)?);
+        }
+    }
+    Ok(conns)
 }
 
 async fn event_group_loop(

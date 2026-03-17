@@ -52,6 +52,68 @@ pub struct Offset(pub i64);
 
 pub use cursor::EventStream;
 
+#[derive(Debug, Clone)]
+pub enum StartPosition {
+    Earliest,
+    Latest,
+    Offset(i64),
+    Index { name: String, value: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct FetchOptions {
+    pub(crate) start: StartPosition,
+    pub(crate) limit: Option<usize>,
+    pub(crate) timeout: Option<std::time::Duration>,
+}
+
+impl FetchOptions {
+    pub fn earliest() -> Self {
+        Self {
+            start: StartPosition::Earliest,
+            limit: None,
+            timeout: None,
+        }
+    }
+
+    pub fn latest() -> Self {
+        Self {
+            start: StartPosition::Latest,
+            limit: None,
+            timeout: None,
+        }
+    }
+
+    pub fn offset(offset: i64) -> Self {
+        Self {
+            start: StartPosition::Offset(offset),
+            limit: None,
+            timeout: None,
+        }
+    }
+
+    pub fn index(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            start: StartPosition::Index {
+                name: name.into(),
+                value: value.into(),
+            },
+            limit: None,
+            timeout: None,
+        }
+    }
+
+    pub fn limit(mut self, limit: usize) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    pub fn timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+}
+
 #[async_trait::async_trait]
 pub trait Writer {
     async fn record(&self, event: Event) -> Result<Offset, ChronicleError>;

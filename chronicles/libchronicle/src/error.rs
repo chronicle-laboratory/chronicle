@@ -18,9 +18,6 @@ pub enum ChronicleError {
     #[error("Reconciliation failed: {0}")]
     ReconciliationFailed(String),
 
-    #[error("Timeline is sealed: {0}")]
-    Sealed(String),
-
     #[error("Ensemble unavailable: {0}")]
     EnsembleUnavailable(String),
 

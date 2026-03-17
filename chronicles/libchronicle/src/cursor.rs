@@ -9,7 +9,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::warn;
 
 type InnerStream = Pin<Box<dyn Stream<Item = Result<Event, ChronicleError>> + Send>>;
@@ -24,6 +24,10 @@ pub struct EventStream {
     position: Arc<AtomicI64>,
     inner: Option<InnerStream>,
     tail: bool,
+    limit: Option<usize>,
+    yielded: usize,
+    timeout: Option<Duration>,
+    started_at: Instant,
     poll_interval: Duration,
     current_backoff: Duration,
     retries: usize,
@@ -34,29 +38,37 @@ impl EventStream {
         timeline_id: i64,
         segments: Vec<Segment>,
         conns: &HashMap<String, Conn>,
+        start_offset: i64,
     ) -> Self {
-        let start = segments.first().map(|s| s.start_offset).unwrap_or(1);
         Self {
             timeline_id,
             segments,
             conns: conns.clone(),
-            position: Arc::new(AtomicI64::new(start)),
+            position: Arc::new(AtomicI64::new(start_offset)),
             inner: None,
             tail: false,
+            limit: None,
+            yielded: 0,
+            timeout: None,
+            started_at: Instant::now(),
             poll_interval: DEFAULT_POLL_INTERVAL,
             current_backoff: DEFAULT_POLL_INTERVAL,
             retries: 0,
         }
     }
 
-    pub fn with_tail(mut self) -> Self {
+    pub(crate) fn with_tail(mut self) -> Self {
         self.tail = true;
         self
     }
 
-    pub fn with_poll_interval(mut self, interval: Duration) -> Self {
-        self.poll_interval = interval;
-        self.current_backoff = interval;
+    pub(crate) fn with_limit(mut self, limit: usize) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    pub(crate) fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
         self
     }
 
@@ -137,6 +149,22 @@ impl EventStream {
 
         Ok(Box::pin(stream))
     }
+
+    fn is_timed_out(&self) -> bool {
+        if let Some(timeout) = self.timeout {
+            self.started_at.elapsed() >= timeout
+        } else {
+            false
+        }
+    }
+
+    fn is_limit_reached(&self) -> bool {
+        if let Some(limit) = self.limit {
+            self.yielded >= limit
+        } else {
+            false
+        }
+    }
 }
 
 impl Stream for EventStream {
@@ -144,6 +172,10 @@ impl Stream for EventStream {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
+            if self.is_limit_reached() || self.is_timed_out() {
+                return Poll::Ready(None);
+            }
+
             if self.inner.is_none() {
                 let timeline_id = self.timeline_id;
                 let segments = self.segments.clone();
@@ -167,6 +199,7 @@ impl Stream for EventStream {
                 Poll::Ready(Some(Ok(event))) => {
                     self.retries = 0;
                     self.current_backoff = self.poll_interval;
+                    self.yielded += 1;
                     return Poll::Ready(Some(Ok(event)));
                 }
                 Poll::Ready(Some(Err(e))) => {
