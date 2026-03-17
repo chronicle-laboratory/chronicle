@@ -765,6 +765,7 @@ dependencies = [
  "catalog",
  "chronicle-unit",
  "clap",
+ "futures-util",
  "libc",
  "libchronicle",
  "serde",

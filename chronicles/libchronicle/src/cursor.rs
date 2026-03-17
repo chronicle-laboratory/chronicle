@@ -1,49 +1,51 @@
 use crate::conn::Conn;
 use crate::error::ChronicleError;
-use crate::{Cursor, FetchedEvent};
+use crate::Event;
 use chronicle_proto::pb_catalog::Segment;
 use chronicle_proto::pb_ext::{ChunkType, FetchEventsRequest};
-use futures_util::{Stream, StreamExt};
+use futures_util::Stream;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 use tracing::warn;
 
-type EventStream = Pin<Box<dyn Stream<Item = Result<FetchedEvent, ChronicleError>> + Send>>;
+type InnerStream = Pin<Box<dyn Stream<Item = Result<Event, ChronicleError>> + Send>>;
 
 const MAX_RETRIES: usize = 5;
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
-const MAX_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
-pub struct TimelineCursor {
+pub struct EventStream {
     timeline_id: i64,
     segments: Vec<Segment>,
-    unit_clients: HashMap<String, Conn>,
+    conns: HashMap<String, Conn>,
     position: Arc<AtomicI64>,
-    stream: Option<EventStream>,
+    inner: Option<InnerStream>,
     tail: bool,
     poll_interval: Duration,
     current_backoff: Duration,
+    retries: usize,
 }
 
-impl TimelineCursor {
-    pub fn new(
+impl EventStream {
+    pub(crate) fn new(
         timeline_id: i64,
         segments: Vec<Segment>,
-        unit_clients: &HashMap<String, Conn>,
+        conns: &HashMap<String, Conn>,
     ) -> Self {
         let start = segments.first().map(|s| s.start_offset).unwrap_or(1);
         Self {
             timeline_id,
             segments,
-            unit_clients: unit_clients.clone(),
+            conns: conns.clone(),
             position: Arc::new(AtomicI64::new(start)),
-            stream: None,
+            inner: None,
             tail: false,
             poll_interval: DEFAULT_POLL_INTERVAL,
             current_backoff: DEFAULT_POLL_INTERVAL,
+            retries: 0,
         }
     }
 
@@ -68,13 +70,13 @@ impl TimelineCursor {
             })
     }
 
-    fn pick_unit<'a>(
-        unit_clients: &'a HashMap<String, Conn>,
+    fn pick_conn<'a>(
+        conns: &'a HashMap<String, Conn>,
         segment: &Segment,
     ) -> Result<&'a Conn, ChronicleError> {
         for ep in &segment.ensemble {
-            if let Some(client) = unit_clients.get(ep) {
-                return Ok(client);
+            if let Some(conn) = conns.get(ep) {
+                return Ok(conn);
             }
         }
         Err(ChronicleError::EnsembleUnavailable(
@@ -82,17 +84,17 @@ impl TimelineCursor {
         ))
     }
 
-    async fn open_stream(
+    async fn open_inner(
         timeline_id: i64,
         segments: &[Segment],
-        unit_clients: &HashMap<String, Conn>,
+        conns: &HashMap<String, Conn>,
         position: &Arc<AtomicI64>,
-    ) -> Result<EventStream, ChronicleError> {
+    ) -> Result<InnerStream, ChronicleError> {
         let start = position.load(Ordering::Relaxed);
         let segment = Self::segment_for_offset(segments, start)?;
-        let client = Self::pick_unit(unit_clients, segment)?;
+        let conn = Self::pick_conn(conns, segment)?;
 
-        let (tx, mut response_stream) = client.open_fetch_stream(64).await?;
+        let (tx, mut response_stream) = conn.open_fetch_stream(64).await?;
 
         tx.send(FetchEventsRequest {
             timeline_id,
@@ -115,16 +117,17 @@ impl TimelineCursor {
                     response.r#type(),
                     ChunkType::Full | ChunkType::Last
                 );
-                for event in response.event {
-                    let fetched = FetchedEvent {
-                        offset: event.offset,
-                        timestamp: event.timestamp,
-                        payload: event.payload.map(|b| b.to_vec()).unwrap_or_default(),
+                for proto_event in response.event {
+                    let evt = Event {
+                        offset: Some(proto_event.offset),
+                        timestamp: Some(proto_event.timestamp),
+                        payload: proto_event.payload.map(|b| b.to_vec()).unwrap_or_default(),
                         key: None,
-                        schema_id: if event.schema_id != 0 { Some(event.schema_id) } else { None },
+                        schema_id: if proto_event.schema_id != 0 { Some(proto_event.schema_id) } else { None },
+                        txn_id: None,
                     };
-                    position.store(event.offset + 1, Ordering::Relaxed);
-                    yield fetched;
+                    position.store(proto_event.offset + 1, Ordering::Relaxed);
+                    yield evt;
                 }
                 if is_final {
                     break;
@@ -136,64 +139,59 @@ impl TimelineCursor {
     }
 }
 
-#[async_trait::async_trait]
-impl Cursor for TimelineCursor {
-    async fn fetch(&mut self) -> Result<Option<FetchedEvent>, ChronicleError> {
-        let mut retries = 0;
+impl Stream for EventStream {
+    type Item = Result<Event, ChronicleError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            if self.stream.is_none() {
-                self.stream = Some(
-                    Self::open_stream(
-                        self.timeline_id,
-                        &self.segments,
-                        &self.unit_clients,
-                        &self.position,
-                    )
-                    .await?,
-                );
+            if self.inner.is_none() {
+                let timeline_id = self.timeline_id;
+                let segments = self.segments.clone();
+                let conns = self.conns.clone();
+                let position = self.position.clone();
+
+                let mut fut = Box::pin(Self::open_inner(timeline_id, &segments, &conns, &position));
+                match fut.as_mut().poll(cx) {
+                    Poll::Ready(Ok(stream)) => {
+                        self.inner = Some(stream);
+                    }
+                    Poll::Ready(Err(e)) => {
+                        return Poll::Ready(Some(Err(e)));
+                    }
+                    Poll::Pending => return Poll::Pending,
+                }
             }
 
-            let stream = self.stream.as_mut().unwrap();
-            match stream.next().await {
-                Some(Ok(item)) => {
+            let stream = self.inner.as_mut().unwrap();
+            match stream.as_mut().poll_next(cx) {
+                Poll::Ready(Some(Ok(event))) => {
+                    self.retries = 0;
                     self.current_backoff = self.poll_interval;
-                    return Ok(Some(item));
+                    return Poll::Ready(Some(Ok(event)));
                 }
-                Some(Err(e)) => {
-                    retries += 1;
-                    if retries > MAX_RETRIES {
-                        return Err(e);
+                Poll::Ready(Some(Err(e))) => {
+                    self.retries += 1;
+                    if self.retries > MAX_RETRIES {
+                        return Poll::Ready(Some(Err(e)));
                     }
                     warn!(
                         error = %e,
-                        retry = retries,
+                        retry = self.retries,
                         "fetch stream error, reconnecting"
                     );
-                    self.stream = None;
-                    let backoff = Duration::from_millis(100 * (1 << retries.min(5)));
-                    tokio::time::sleep(backoff).await;
+                    self.inner = None;
+                    continue;
                 }
-                None => {
+                Poll::Ready(None) => {
                     if self.tail {
-                        tokio::time::sleep(self.current_backoff).await;
-                        self.current_backoff =
-                            (self.current_backoff * 2).min(MAX_POLL_INTERVAL);
-                        self.stream = None;
-                        continue;
+                        self.inner = None;
+                        cx.waker().wake_by_ref();
+                        return Poll::Pending;
                     }
-                    return Ok(None);
+                    return Poll::Ready(None);
                 }
+                Poll::Pending => return Poll::Pending,
             }
         }
-    }
-
-    fn seek(&mut self, offset: i64) {
-        self.position.store(offset, Ordering::Relaxed);
-        self.stream = None;
-        self.current_backoff = self.poll_interval;
-    }
-
-    fn position(&self) -> i64 {
-        self.position.load(Ordering::Relaxed)
     }
 }

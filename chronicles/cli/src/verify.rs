@@ -1,5 +1,6 @@
 use libchronicle::chronicle::{Chronicle, ChronicleOptions};
-use libchronicle::{Cursor, Event, Writer};
+use futures_util::StreamExt;
+use libchronicle::{Event, Writer};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -300,9 +301,9 @@ pub async fn run(args: VerifyArgs) -> Result<(), Box<dyn std::error::Error>> {
         handles.push(tokio::spawn(async move {
             let name = format!("verify-{}", i);
 
-            let mut cursor = loop {
-                match chronicle.open_cursor(&name).await {
-                    Ok(c) => break c,
+            let mut stream = loop {
+                match chronicle.open_stream(&name).await {
+                    Ok(s) => break s,
                     Err(_) => {
                         tokio::time::sleep(Duration::from_secs(1)).await;
                         if !reading.load(Ordering::Relaxed) {
@@ -314,27 +315,21 @@ pub async fn run(args: VerifyArgs) -> Result<(), Box<dyn std::error::Error>> {
             info!(timeline = name, "reader started");
 
             while reading.load(Ordering::Relaxed) {
-                match cursor.fetch().await {
-                    Ok(Some(event)) => {
+                match stream.next().await {
+                    Some(Ok(event)) => {
                         stats.read.fetch_add(1, Ordering::Relaxed);
                         verifier
                             .lock()
                             .await
-                            .record_read(event.offset, &event.payload, payload_size);
+                            .record_read(event.offset.unwrap_or(0), &event.payload, payload_size);
                         stats.verified.fetch_add(1, Ordering::Relaxed);
                     }
-                    Ok(None) => {
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                        let pos = cursor.position();
-                        cursor.seek(pos);
-                    }
-                    Err(e) => {
+                    Some(Err(e)) => {
                         stats.read_errors.fetch_add(1, Ordering::Relaxed);
                         warn!(timeline = name, error = %e, "read error");
                         tokio::time::sleep(Duration::from_secs(1)).await;
-                        let pos = cursor.position();
-                        cursor.seek(pos);
                     }
+                    None => break,
                 }
             }
         }));

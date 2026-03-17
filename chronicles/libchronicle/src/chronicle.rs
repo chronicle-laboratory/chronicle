@@ -1,5 +1,5 @@
 use crate::conn::{ConnOptions, ConnPool};
-use crate::cursor::TimelineCursor;
+use crate::cursor::EventStream;
 use crate::error::ChronicleError;
 use crate::observability::ClientMetrics;
 use crate::timeline::{self, Timeline};
@@ -151,24 +151,20 @@ impl Chronicle {
         Ok(())
     }
 
-    pub async fn open_cursor(
+    pub async fn open_stream(
         &self,
         name: &str,
-    ) -> Result<TimelineCursor, ChronicleError> {
+    ) -> Result<EventStream, ChronicleError> {
         let tc = self.catalog.get_timeline(name).await?;
         let conns = self.resolve_unit_conns().await?;
-        Ok(TimelineCursor::new(
-            tc.timeline_id,
-            tc.segments,
-            &conns,
-        ))
+        Ok(EventStream::new(tc.timeline_id, tc.segments, &conns))
     }
 
-    pub async fn open_tail_cursor(
+    pub async fn open_tail_stream(
         &self,
         name: &str,
-    ) -> Result<TimelineCursor, ChronicleError> {
-        let cursor = self.open_cursor(name).await?;
-        Ok(cursor.with_tail())
+    ) -> Result<EventStream, ChronicleError> {
+        let stream = self.open_stream(name).await?;
+        Ok(stream.with_tail())
     }
 }
