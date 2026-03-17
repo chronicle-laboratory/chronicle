@@ -24,7 +24,7 @@ struct Inner {
     lrs: i64,
     lra: i64,
     replication_factor: usize,
-    schema_id: i64,
+    schema_id: Option<String>,
     needs_trunc: bool,
     acked: HashMap<i64, HashSet<String>>,
     waiters: HashMap<i64, oneshot::Sender<Result<Offset, ChronicleError>>>,
@@ -46,7 +46,7 @@ impl StateMachine {
         timeline_name: &str,
         tc: &chronicle_proto::pb_catalog::TimelineCatalog,
         replication_factor: usize,
-        schema_id: Option<i64>,
+        schema_id: Option<String>,
     ) -> Result<Self, ChronicleError> {
         let new_term = tc.term + 1;
         let mut tc_update = tc.clone();
@@ -152,7 +152,7 @@ impl StateMachine {
             lrs: lra,
             lra,
             replication_factor,
-            schema_id: schema_id.unwrap_or(0),
+            schema_id,
             needs_trunc: lra > 0,
             acked: HashMap::new(),
             waiters: HashMap::new(),
@@ -228,7 +228,7 @@ impl StateMachine {
                 payload: Some(event.payload.into()),
                 crc32: None,
                 timestamp: now,
-                schema_id: s.schema_id,
+                schema_id: 0,
             };
 
             let item = RecordEventsRequestItem {

@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "compacted-timeline",
             TimelineOptions::new()
                 .replication_factor(1)
-                .schema_id(100)
+                .schema_id("org.example.Order/v1")
                 .compaction(true),
         )
         .await?;

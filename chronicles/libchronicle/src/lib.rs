@@ -115,7 +115,7 @@ const DEFAULT_LINGER: std::time::Duration = std::time::Duration::from_millis(5);
 #[derive(Debug, Clone)]
 pub struct TimelineOptions {
     pub(crate) replication_factor: usize,
-    pub(crate) schema_id: Option<i64>,
+    pub(crate) schema_id: Option<String>,
     pub(crate) retention: Option<std::time::Duration>,
     pub(crate) compaction: bool,
     pub(crate) max_batch_size: usize,
@@ -140,8 +140,8 @@ impl TimelineOptions {
         Self::default()
     }
 
-    pub fn schema_id(mut self, id: i64) -> Self {
-        self.schema_id = Some(id);
+    pub fn schema_id(mut self, id: impl Into<String>) -> Self {
+        self.schema_id = Some(id.into());
         self
     }
 
