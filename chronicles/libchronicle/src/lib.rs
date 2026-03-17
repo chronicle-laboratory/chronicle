@@ -41,11 +41,8 @@ impl Event {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct RecordResult {
-    pub timeline_id: i64,
-    pub offset: i64,
-}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Offset(pub i64);
 
 #[derive(Debug, Clone)]
 pub struct FetchedEvent {
@@ -58,7 +55,7 @@ pub struct FetchedEvent {
 
 #[async_trait::async_trait]
 pub trait Writer {
-    async fn record(&self, event: Event) -> Result<RecordResult, ChronicleError>;
+    async fn record(&self, event: Event) -> Result<Offset, ChronicleError>;
 }
 
 #[async_trait::async_trait]

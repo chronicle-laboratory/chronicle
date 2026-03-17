@@ -1,6 +1,6 @@
 use crate::conn::UnitClient;
 use crate::error::ChronicleError;
-use crate::{Event as UserEvent, RecordResult, Writer};
+use crate::{Event as UserEvent, Offset, Writer};
 use catalog::Catalog;
 use chronicle_proto::pb_catalog::{Segment, TimelineStatus};
 use chronicle_proto::pb_ext::{
@@ -388,7 +388,7 @@ impl Timeline {
 
 #[async_trait::async_trait]
 impl Writer for Timeline {
-    async fn record(&self, event: UserEvent) -> Result<RecordResult, ChronicleError> {
+    async fn record(&self, event: UserEvent) -> Result<Offset, ChronicleError> {
         let (offset, request, senders) = {
             let mut state = self.inner.lock().unwrap();
 
@@ -440,10 +440,7 @@ impl Writer for Timeline {
             }
         }
 
-        Ok(RecordResult {
-            timeline_id: self.timeline_id,
-            offset,
-        })
+        Ok(Offset(offset))
     }
 }
 

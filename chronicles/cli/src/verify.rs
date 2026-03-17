@@ -274,7 +274,7 @@ pub async fn run(args: VerifyArgs) -> Result<(), Box<dyn std::error::Error>> {
 
                 match timeline.record(Event::new(payload.clone())).await {
                     Ok(result) => {
-                        verifier.lock().await.record_ack(result.offset, payload);
+                        verifier.lock().await.record_ack(result.0, payload);
                         stats.written.fetch_add(1, Ordering::Relaxed);
                         seq += 1;
                     }
