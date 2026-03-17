@@ -2,12 +2,26 @@ pub mod error;
 pub mod memory_catalog;
 pub mod oxia_catalog;
 
-use chronicle_proto::pb_catalog::{TimelineCatalog, UnitRegistration};
+use chronicle_proto::pb_catalog::{Segment, TimelineMeta, UnitRegistration};
 use error::CatalogError;
 use memory_catalog::MemoryCatalog;
 use oxia_catalog::OxiaCatalog;
 use serde::Deserialize;
 use tracing::info;
+
+pub const SEGMENT_KEY_PAD: usize = 20;
+
+pub fn segment_key(name: &str, start_offset: i64) -> String {
+    format!("/chronicle/timelines/{}/seg/{:0>width$}", name, start_offset, width = SEGMENT_KEY_PAD)
+}
+
+pub fn segment_key_prefix(name: &str) -> String {
+    format!("/chronicle/timelines/{}/seg/", name)
+}
+
+pub fn segment_key_max(name: &str) -> String {
+    format!("/chronicle/timelines/{}/seg/{}", name, "9".repeat(SEGMENT_KEY_PAD))
+}
 
 pub enum Catalog {
     Memory(MemoryCatalog),
@@ -15,7 +29,7 @@ pub enum Catalog {
 }
 
 impl Catalog {
-    pub async fn get_timeline(&self, name: &str) -> Result<TimelineCatalog, CatalogError> {
+    pub async fn get_timeline(&self, name: &str) -> Result<TimelineMeta, CatalogError> {
         match self {
             Catalog::Memory(c) => c.get_timeline(name).await,
             Catalog::Oxia(c) => c.get_timeline(name).await,
@@ -24,16 +38,16 @@ impl Catalog {
 
     pub async fn put_timeline(
         &self,
-        catalog: &TimelineCatalog,
+        meta: &TimelineMeta,
         expected_version: i64,
-    ) -> Result<TimelineCatalog, CatalogError> {
+    ) -> Result<TimelineMeta, CatalogError> {
         match self {
-            Catalog::Memory(c) => c.put_timeline(catalog, expected_version).await,
-            Catalog::Oxia(c) => c.put_timeline(catalog, expected_version).await,
+            Catalog::Memory(c) => c.put_timeline(meta, expected_version).await,
+            Catalog::Oxia(c) => c.put_timeline(meta, expected_version).await,
         }
     }
 
-    pub async fn create_timeline(&self, name: &str) -> Result<TimelineCatalog, CatalogError> {
+    pub async fn create_timeline(&self, name: &str) -> Result<TimelineMeta, CatalogError> {
         match self {
             Catalog::Memory(c) => c.create_timeline(name).await,
             Catalog::Oxia(c) => c.create_timeline(name).await,
@@ -47,10 +61,35 @@ impl Catalog {
         }
     }
 
-    pub async fn list_timelines(&self) -> Result<Vec<TimelineCatalog>, CatalogError> {
+    pub async fn list_timelines(&self) -> Result<Vec<TimelineMeta>, CatalogError> {
         match self {
             Catalog::Memory(c) => c.list_timelines().await,
             Catalog::Oxia(c) => c.list_timelines().await,
+        }
+    }
+
+    pub async fn put_segment(
+        &self,
+        timeline_name: &str,
+        segment: &Segment,
+    ) -> Result<(), CatalogError> {
+        match self {
+            Catalog::Memory(c) => c.put_segment(timeline_name, segment).await,
+            Catalog::Oxia(c) => c.put_segment(timeline_name, segment).await,
+        }
+    }
+
+    pub async fn list_segments(&self, timeline_name: &str) -> Result<Vec<Segment>, CatalogError> {
+        match self {
+            Catalog::Memory(c) => c.list_segments(timeline_name).await,
+            Catalog::Oxia(c) => c.list_segments(timeline_name).await,
+        }
+    }
+
+    pub async fn get_last_segment(&self, timeline_name: &str) -> Result<Option<Segment>, CatalogError> {
+        match self {
+            Catalog::Memory(c) => c.get_last_segment(timeline_name).await,
+            Catalog::Oxia(c) => c.get_last_segment(timeline_name).await,
         }
     }
 

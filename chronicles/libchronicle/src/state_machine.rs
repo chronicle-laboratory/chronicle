@@ -2,7 +2,7 @@ use crate::conn::{Conn, ConnPool};
 use crate::error::ChronicleError;
 use crate::Offset;
 use catalog::Catalog;
-use chronicle_proto::pb_catalog::{Segment, TimelineStatus};
+use chronicle_proto::pb_catalog::{Segment, TimelineMeta, TimelineStatus};
 use chronicle_proto::pb_ext::{
     RecordEventsRequest, RecordEventsRequestItem, StatusCode,
 };
@@ -24,6 +24,7 @@ struct Inner {
     lrs: i64,
     lra: i64,
     replication_factor: usize,
+    #[allow(dead_code)]
     schema_id: Option<String>,
     needs_trunc: bool,
     acked: HashMap<i64, HashSet<String>>,
@@ -43,13 +44,14 @@ impl StateMachine {
     pub async fn open(
         catalog: &Catalog,
         pool: &ConnPool,
-        tc: &chronicle_proto::pb_catalog::TimelineCatalog,
+        tc: &TimelineMeta,
         replication_factor: usize,
         schema_id: Option<String>,
     ) -> Result<Self, ChronicleError> {
-        let last_segment = tc.segments.last().ok_or_else(|| {
-            ChronicleError::ReconciliationFailed("timeline has no segments".into())
-        })?;
+        let last_segment = catalog.get_last_segment(&tc.name).await?
+            .ok_or_else(|| {
+                ChronicleError::ReconciliationFailed("timeline has no segments".into())
+            })?;
         let ensemble = &last_segment.ensemble;
 
         let new_term = tc.term + 1;
@@ -121,23 +123,21 @@ impl StateMachine {
 
         let lra = max_lra;
 
-        let mut segments: Vec<Segment> = tc
-            .segments
-            .iter()
+        let existing_segments = catalog.list_segments(&tc.name).await?;
+        let mut segments: Vec<Segment> = existing_segments
+            .into_iter()
             .filter(|seg| seg.start_offset <= lra)
-            .cloned()
             .collect();
 
         let writable_segment = Segment {
-            id: segments.last().map_or(1, |s| s.id + 1),
             ensemble: ensemble.clone(),
             start_offset: lra + 1,
         };
+        catalog.put_segment(&tc.name, &writable_segment).await?;
         segments.push(writable_segment.clone());
 
         let mut updated = tc.clone();
         updated.status = TimelineStatus::Active as i32;
-        updated.segments = segments.clone();
         updated.lra = lra;
         catalog.put_timeline(&updated, tc.version).await?;
 

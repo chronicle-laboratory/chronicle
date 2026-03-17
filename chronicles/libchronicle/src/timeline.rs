@@ -6,7 +6,7 @@ use crate::event_group::{self, PendingEvent};
 use crate::state_machine::StateMachine;
 use crate::{Event as UserEvent, FetchOptions, Offset, StartPosition, TimelineOptions, Writer};
 use catalog::Catalog;
-use chronicle_proto::pb_catalog::{Segment, TimelineStatus};
+use chronicle_proto::pb_catalog::{Segment, TimelineMeta, TimelineStatus};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 use tracing::info;
@@ -55,14 +55,13 @@ impl Timeline {
                     })?;
 
                 let first_segment = Segment {
-                    id: 1,
                     ensemble: ens.clone(),
                     start_offset: 1,
                 };
+                catalog.put_segment(name, &first_segment).await?;
 
                 let mut updated = tc.clone();
                 updated.status = TimelineStatus::Active as i32;
-                updated.segments = vec![first_segment];
                 updated.term = 0;
                 let updated = catalog.put_timeline(&updated, tc.version).await?;
 
