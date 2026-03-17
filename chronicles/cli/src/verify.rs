@@ -12,11 +12,8 @@ use tracing::{error, info, warn};
 
 #[derive(clap::Args)]
 pub struct VerifyArgs {
-    #[arg(long)]
+    #[arg(long, default_value = "localhost:6648")]
     pub catalog: String,
-
-    #[arg(long, default_value = "oxia")]
-    pub backend: String,
 
     #[arg(long)]
     pub units: Option<String>,
@@ -177,8 +174,7 @@ impl Stats {
 
 pub async fn run(args: VerifyArgs) -> Result<(), Box<dyn std::error::Error>> {
     let catalog_opts = catalog::CatalogOptions {
-        backend: args.backend.clone(),
-        service_address: Some(args.catalog.clone()),
+        service_address: args.catalog.clone(),
         ..Default::default()
     };
     let catalog = Arc::new(catalog::build_catalog(&catalog_opts).await?);

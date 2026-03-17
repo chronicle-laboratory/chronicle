@@ -12,5 +12,4 @@ tonic = { workspace = true }
 tracing = { workspace = true }
 liboxia = { workspace = true }
 prost = { workspace = true }
-dashmap = { workspace = true }
 serde = { workspace = true }

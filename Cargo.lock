@@ -721,7 +721,6 @@ name = "catalog"
 version = "0.1.0"
 dependencies = [
  "chronicle-proto",
- "dashmap",
  "liboxia",
  "prost 0.13.5",
  "serde",
