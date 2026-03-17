@@ -11,20 +11,15 @@ const DEFAULT_PID_FILE: &str = "chronicle-unit.pid";
 
 #[derive(clap::Subcommand)]
 pub enum UnitAction {
-    /// Start the unit server
     Start {
-        /// Path to TOML configuration file
         #[arg(short, long)]
         config: Option<String>,
 
-        /// Path to PID file
         #[arg(long, default_value = DEFAULT_PID_FILE)]
         pid_file: String,
     },
 
-    /// Stop a running unit server
     Stop {
-        /// Path to PID file
         #[arg(long, default_value = DEFAULT_PID_FILE)]
         pid_file: String,
     },
@@ -59,9 +54,6 @@ pub async fn run(action: UnitAction) -> Result<(), Box<dyn std::error::Error>> {
 
             process::write_pid_file(&pid_file)?;
 
-            // Retry catalog connection with timeout. liboxia's build()
-            // can block a worker thread during shard discovery, so we
-            // spawn it and use select! to enforce a timeout.
             let catalog = loop {
                 let opts = options.catalog.clone();
                 let task = tokio::spawn(async move {

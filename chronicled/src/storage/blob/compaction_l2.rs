@@ -21,7 +21,6 @@ impl CompactionLevel for L2MergeTask {
     fn segment_manager(&self) -> &Arc<SegmentManager> { &self.segment_manager }
     fn index(&self) -> &Storage { &self.index }
 
-    /// Merge all entries into a single segment, sorted by (timeline_id, offset).
     fn group_entries(
         &self,
         mut entries: Vec<((i64, i64), IndexEntry)>,

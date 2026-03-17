@@ -49,7 +49,6 @@ impl ReadActor {
                         let request = envelope.request;
                         let e_offset = request.end_offset;
 
-                        // Run blocking I/O (RocksDB scan + segment reads) off the async runtime.
                         let reader_clone = reader.clone();
                         let batches = match tokio::task::spawn_blocking(move || {
                             reader_clone.fetch_batches(

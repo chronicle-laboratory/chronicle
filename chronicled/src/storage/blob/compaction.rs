@@ -16,15 +16,6 @@ use crate::storage::index::Storage;
 use crate::storage::write_cache::WriteCache;
 use crate::wal::wal::Wal;
 
-/// Leveled compaction pipeline with independent per-level tasks.
-///
-/// Each level polls segment manager metadata via RocksDB to decide if work
-/// is needed — no cross-level notification required.
-///
-///   L1 = sealed write cache flush → blob segment
-///   L2 = merge N L1 segments → fewer, larger, timeline-sorted segments
-///   L3 = split L2 by timeline → one segment per timeline
-///   L4 = offload L3 segments to remote (S3)
 pub struct CompactionPipeline {
     handles: Vec<JoinHandle<()>>,
 }

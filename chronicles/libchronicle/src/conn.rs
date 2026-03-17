@@ -30,7 +30,6 @@ impl UnitClient {
         })
     }
 
-    /// Reconnect to the same endpoint, replacing the inner channel.
     pub async fn reconnect(&mut self) -> Result<(), ChronicleError> {
         let channel = Self::build_channel(&self.endpoint).await?;
         self.client = ChronicleClient::new(channel);
@@ -53,14 +52,10 @@ impl UnitClient {
         &self.endpoint
     }
 
-    /// Lightweight connectivity check. Returns true if the unit responds.
     pub async fn check_alive(&self) -> bool {
-        // Use a fence call with timeline_id=0, term=0 as a liveness probe.
-        // Units will respond (even with a fenced error), proving they're alive.
         self.fence(0, 0).await.is_ok()
     }
 
-    /// Unary Fence RPC.
     pub async fn fence(
         &self,
         timeline_id: i64,
@@ -74,7 +69,6 @@ impl UnitClient {
         Ok(response.into_inner())
     }
 
-    /// Short-lived bidirectional Record stream: sends one request batch, reads one response.
     pub async fn record(
         &self,
         items: Vec<RecordEventsRequestItem>,
@@ -102,7 +96,6 @@ impl UnitClient {
         Ok(all_items)
     }
 
-    /// Open a persistent bidirectional Record stream.
     pub async fn open_record_stream(
         &self,
         buffer: usize,
@@ -123,7 +116,6 @@ impl UnitClient {
         Ok((tx, response.into_inner()))
     }
 
-    /// Open a persistent bidirectional Fetch stream.
     pub async fn open_fetch_stream(
         &self,
         buffer: usize,

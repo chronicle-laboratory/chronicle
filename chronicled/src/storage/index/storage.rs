@@ -65,28 +65,22 @@ impl Storage {
         db_options.set_keep_log_file_num(10);
         db_options.enable_statistics();
 
-        // Index is rebuildable from segment files — WAL is unnecessary write amplification.
         db_options.set_manual_wal_flush(true);
 
-        // Compression: LZ4 for mid levels, Zstd for cold data.
         db_options.set_compression_type(DBCompressionType::Lz4);
         db_options.set_bottommost_compression_type(DBCompressionType::Zstd);
 
-        // Prefix extractor: first 8 bytes = timeline_id.
         db_options.set_prefix_extractor(SliceTransform::create_fixed_prefix(8));
 
-        // Memtable sizing from auto-config.
         db_options.set_write_buffer_size(idx.write_buffer_size);
         db_options.set_max_write_buffer_number(3);
         db_options.set_min_write_buffer_number_to_merge(2);
 
-        // LSM levels and SST targets from auto-config.
         db_options.set_num_levels(idx.num_levels);
         db_options.set_target_file_size_base(idx.target_file_size_base);
         db_options.set_max_bytes_for_level_base(idx.max_bytes_for_level_base);
         db_options.set_level_compaction_dynamic_level_bytes(true);
 
-        // Block cache for fast reads — sized from auto-config.
         let cache = Cache::new_lru_cache(idx.block_cache_bytes);
         let mut block_options = BlockBasedOptions::default();
         block_options.set_block_cache(&cache);
@@ -197,7 +191,6 @@ impl Storage {
         results
     }
 
-    /// Full scan of the index, returning all entries whose segment_id is in the given set.
     pub fn scan_by_segment_ids(
         &self,
         segment_ids: &HashSet<u64>,
@@ -224,7 +217,6 @@ impl Storage {
         results
     }
 
-    /// Return the set of all segment IDs referenced in the index.
     pub fn all_referenced_segment_ids(&self) -> HashSet<u64> {
         let iter = self.inner.database.iterator(rocksdb::IteratorMode::Start);
         let mut ids = HashSet::new();
@@ -244,7 +236,6 @@ impl Storage {
         ids
     }
 
-    /// Store raw segment metadata bytes keyed by segment_id.
     pub fn put_segment_meta_raw(&self, segment_id: u64, value: &[u8]) -> Result<(), UnitError> {
         let key = encode_segment_meta_key(segment_id);
         self.inner
@@ -253,13 +244,11 @@ impl Storage {
             .map_err(|e| UnitError::Storage(e.to_string()))
     }
 
-    /// Retrieve raw segment metadata bytes by segment_id.
     pub fn get_segment_meta_raw(&self, segment_id: u64) -> Option<Vec<u8>> {
         let key = encode_segment_meta_key(segment_id);
         self.inner.database.get(key).ok().flatten()
     }
 
-    /// Delete segment metadata by segment_id.
     pub fn delete_segment_meta(&self, segment_id: u64) -> Result<(), UnitError> {
         let key = encode_segment_meta_key(segment_id);
         self.inner
@@ -268,7 +257,6 @@ impl Storage {
             .map_err(|e| UnitError::Storage(e.to_string()))
     }
 
-    /// Store a raw key-value pair (used for WAL checkpoint, etc.).
     pub fn put_raw(&self, key: &[u8], value: &[u8]) -> Result<(), UnitError> {
         self.inner
             .database
@@ -276,17 +264,14 @@ impl Storage {
             .map_err(|e| UnitError::Storage(e.to_string()))
     }
 
-    /// Retrieve a raw value by key.
     pub fn get_raw(&self, key: &[u8]) -> Option<Vec<u8>> {
         self.inner.database.get(key).ok().flatten()
     }
 
-    /// Get a RocksDB ticker value.
     pub fn ticker(&self, ticker: Ticker) -> u64 {
         self.inner.db_options.get_ticker_count(ticker)
     }
 
-    /// Retrieve all segment metadata entries as (segment_id, raw_value).
     pub fn all_segment_meta_raw(&self) -> Vec<(u64, Vec<u8>)> {
         let prefix = [SEGMENT_META_PREFIX];
         let iter = self.inner.database.iterator(

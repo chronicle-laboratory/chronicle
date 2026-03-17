@@ -4,16 +4,12 @@ use async_trait::async_trait;
 
 use crate::error::unit_error::UnitError;
 
-/// Trait for remote segment storage (S3-compatible object stores).
 #[async_trait]
 pub trait RemoteStore: Send + Sync {
-    /// Upload a local segment file to remote storage.
     async fn upload(&self, local_path: &Path, key: &str) -> Result<(), UnitError>;
 
-    /// Download a remote segment, returning its full contents.
     async fn download(&self, key: &str) -> Result<Vec<u8>, UnitError>;
 
-    /// Delete a remote segment.
     async fn delete(&self, key: &str) -> Result<(), UnitError>;
 }
 

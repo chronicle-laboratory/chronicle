@@ -49,8 +49,6 @@ impl Default for WalOptions {
 pub struct ServerOptions {
     #[serde(default = "default_server_address")]
     pub bind_address: SocketAddr,
-    /// Address to register in the catalog for other nodes to connect to.
-    /// Defaults to bind_address. Set this in Kubernetes to the pod's DNS name.
     #[serde(default)]
     pub advertise_address: Option<String>,
 }
@@ -80,13 +78,9 @@ impl Default for LogOptions {
 
 #[derive(Debug, Deserialize)]
 pub struct CompactionOptions {
-    /// Polling interval in ms. None = auto (5000ms).
     pub interval_ms: Option<u64>,
-    /// Write cache capacity in MB. None = auto (10% of system memory).
     pub write_cache_capacity_mb: Option<usize>,
-    /// L1 segment count before L2 merge. None = auto (4).
     pub l1_compaction_trigger: Option<usize>,
-    /// L2 segment count before L3 split. None = auto (4).
     pub l2_compaction_trigger: Option<usize>,
     #[serde(default)]
     pub offload: Option<OffloadOptions>,
@@ -104,7 +98,6 @@ impl Default for CompactionOptions {
     }
 }
 
-/// Resolved compaction options with all values filled in.
 #[derive(Debug, Clone)]
 pub struct ResolvedCompactionOptions {
     pub interval_ms: u64,
@@ -137,16 +130,11 @@ pub struct OffloadOptions {
     pub region: Option<String>,
 }
 
-/// RocksDB index tuning. None = auto from system environment.
 #[derive(Debug, Deserialize)]
 pub struct IndexOptions {
-    /// Block cache size in MB. None = auto (25% of system memory).
     pub block_cache_mb: Option<usize>,
-    /// Memtable (write buffer) size in MB. None = auto (5% of system memory).
     pub write_buffer_mb: Option<usize>,
-    /// Number of LSM levels. None = auto (4).
     pub num_levels: Option<i32>,
-    /// SST target file size in MB. None = auto (4-16MB based on memory).
     pub target_file_size_mb: Option<u64>,
 }
 
@@ -161,7 +149,6 @@ impl Default for IndexOptions {
     }
 }
 
-/// Resolved index options with all values filled in.
 #[derive(Debug, Clone)]
 pub struct ResolvedIndexOptions {
     pub block_cache_bytes: usize,
@@ -202,7 +189,6 @@ impl IndexOptions {
 pub struct SegmentOptions {
     #[serde(default = "default_segments_dir")]
     pub dir: String,
-    /// Segment size in MB (mmap initial capacity, WAL max size). None = auto.
     pub segment_size_mb: Option<u64>,
 }
 
@@ -233,14 +219,10 @@ impl SegmentOptions {
     }
 }
 
-/// Retention policy for automatic data eviction.
 #[derive(Debug, Deserialize, Clone)]
 pub struct RetentionOptions {
-    /// Maximum age of events in hours. Events older than this are eligible for deletion.
-    /// None = no TTL-based retention (keep forever).
     #[serde(default)]
     pub ttl_hours: Option<u64>,
-    /// How often the retention manager runs, in seconds.
     #[serde(default = "default_retention_interval_secs")]
     pub interval_secs: u64,
 }
@@ -255,7 +237,7 @@ impl Default for RetentionOptions {
 }
 
 fn default_retention_interval_secs() -> u64 {
-    3600 // 1 hour
+    3600
 }
 
 #[derive(Debug, Deserialize)]

@@ -22,7 +22,6 @@ impl CompactionLevel for L3SplitTask {
     fn segment_manager(&self) -> &Arc<SegmentManager> { &self.segment_manager }
     fn index(&self) -> &Storage { &self.index }
 
-    /// Split entries by timeline — one group per timeline_id, sorted by offset.
     fn group_entries(
         &self,
         entries: Vec<((i64, i64), IndexEntry)>,

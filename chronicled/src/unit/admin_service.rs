@@ -21,7 +21,6 @@ pub struct AdminService {
     pub state: Arc<std::sync::atomic::AtomicU8>,
 }
 
-// Unit states matching UnitStatus proto enum.
 pub const STATE_WRITABLE: u8 = 0;
 pub const STATE_READONLY: u8 = 1;
 
@@ -90,8 +89,6 @@ impl Admin for AdminService {
         &self,
         _request: Request<TriggerCompactionRequest>,
     ) -> Result<Response<TriggerCompactionResponse>, Status> {
-        // Manual compaction trigger is a future enhancement.
-        // For now, acknowledge the request.
         Ok(Response::new(TriggerCompactionResponse {
             triggered: false,
             message: "manual compaction not yet implemented".to_string(),

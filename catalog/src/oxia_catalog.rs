@@ -38,7 +38,6 @@ impl OxiaCatalog {
             client,
             next_timeline_id: AtomicI64::new(1),
         };
-        // Recover next_timeline_id from existing timelines.
         if let Ok(timelines) = catalog.list_timelines().await {
             let max_id = timelines.iter().map(|t| t.timeline_id).max().unwrap_or(0);
             catalog
@@ -66,8 +65,6 @@ impl OxiaCatalog {
             .map_err(|e| CatalogError::Internal(e.to_string()))
     }
 
-    /// Read the current unit registry, returning (registry, version_id).
-    /// Returns empty registry with version -1 if the key doesn't exist.
     async fn read_unit_registry(&self) -> Result<(UnitRegistry, i64), CatalogError> {
         match self.client.get_with_options(UNITS_KEY.to_string(), vec![GetOption::IncludeValue()]).await {
             Ok(result) => {
@@ -89,7 +86,6 @@ impl OxiaCatalog {
         }
     }
 
-    /// Write the unit registry with CAS.
     async fn write_unit_registry(&self, registry: &UnitRegistry, expected_version: i64) -> Result<(), CatalogError> {
         let value = registry.encode_to_vec();
         self.client
@@ -223,16 +219,12 @@ impl Catalog for OxiaCatalog {
         Ok(timelines)
     }
 
-    // ── Unit operations (single-key CAS, no range scan) ─────────────────
-
     async fn register_unit(
         &self,
         registration: &UnitRegistration,
     ) -> Result<(), CatalogError> {
         info!(address = %registration.address, "register_unit: starting");
 
-        // Read-modify-write with CAS, falling back to unconditional put
-        // if CAS keeps failing (e.g. after liboxia client reconnect).
         for attempt in 0..10 {
             let (mut registry, version) = self.read_unit_registry().await?;
             info!(
@@ -242,7 +234,6 @@ impl Catalog for OxiaCatalog {
                 "register_unit: read registry"
             );
 
-            // Upsert: remove existing entry for this address, then add.
             registry.units.retain(|u| u.address != registration.address);
             registry.units.push(registration.clone());
 
@@ -258,7 +249,6 @@ impl Catalog for OxiaCatalog {
                 }
                 Err(CatalogError::VersionConflict { .. }) => {
                     warn!("register_unit: CAS conflict on attempt {}, retrying", attempt);
-                    // After several CAS failures, try unconditional put
                     if attempt >= 5 {
                         let value = registry.encode_to_vec();
                         info!("register_unit: falling back to unconditional put");

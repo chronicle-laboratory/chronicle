@@ -91,7 +91,6 @@ impl L1FlushTask {
         self.index.put_index_batch(&index_entries)?;
         self.write_cache.clear_sealed();
 
-        // After successful flush, advance WAL checkpoint and trim old segments.
         if let Some(ref wal) = self.wal {
             let current_seg = wal.current_segment_id().await;
             let cp = WalCheckpoint::new(current_seg);

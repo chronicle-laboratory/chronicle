@@ -9,66 +9,53 @@ use tracing::info;
 
 static GLOBAL_METRICS: OnceLock<Arc<ServerMetrics>> = OnceLock::new();
 
-/// Set the global metrics instance (called once during unit init).
 pub fn set_global_metrics(metrics: Arc<ServerMetrics>) {
     let _ = GLOBAL_METRICS.set(metrics);
 }
 
-/// Get the global metrics instance. Returns None if not yet initialized.
 pub fn global_metrics() -> Option<&'static Arc<ServerMetrics>> {
     GLOBAL_METRICS.get()
 }
 
-/// Server-side metrics for chronicled.
 #[derive(Clone)]
 pub struct ServerMetrics {
-    // Write path
     pub write_requests: Counter<u64>,
     pub write_errors: Counter<u64>,
     pub write_latency: Histogram<f64>,
     pub write_bytes: Counter<u64>,
 
-    // Read path
     pub read_requests: Counter<u64>,
     pub read_errors: Counter<u64>,
     pub read_latency: Histogram<f64>,
     pub read_events: Counter<u64>,
 
-    // WAL
     pub wal_writes: Counter<u64>,
     pub wal_sync_latency: Histogram<f64>,
     pub wal_bytes: Counter<u64>,
 
-    // Write cache
     pub write_cache_entries: UpDownCounter<i64>,
     pub write_cache_seals: Counter<u64>,
 
-    // Compaction
     pub compaction_runs: Counter<u64>,
     pub compaction_latency: Histogram<f64>,
     pub compaction_bytes_read: Counter<u64>,
     pub compaction_bytes_written: Counter<u64>,
 
-    // Segments
     pub segment_count: UpDownCounter<i64>,
     pub segment_bytes: UpDownCounter<i64>,
 
-    // Index (RocksDB)
     pub index_reads: Counter<u64>,
     pub index_writes: Counter<u64>,
     pub index_read_latency: Histogram<f64>,
     pub index_write_latency: Histogram<f64>,
 
-    // Admin
     pub admin_requests: Counter<u64>,
     pub admin_latency: Histogram<f64>,
 
-    // Catalog
     pub catalog_operations: Counter<u64>,
     pub catalog_errors: Counter<u64>,
     pub catalog_latency: Histogram<f64>,
 
-    // Queue / inflight
     pub write_queue_depth: UpDownCounter<i64>,
     pub read_queue_depth: UpDownCounter<i64>,
     pub failed_requests: Counter<u64>,
@@ -76,12 +63,10 @@ pub struct ServerMetrics {
 
 impl ServerMetrics {
     pub fn new(meter: &Meter) -> Self {
-        // Sub-millisecond buckets for request latency: 50us to 10s
         let latency_buckets = vec![
             0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005,
             0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
         ];
-        // Compaction can take longer: 1ms to 60s
         let compaction_buckets = vec![
             0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5,
             1.0, 2.5, 5.0, 10.0, 30.0, 60.0,
@@ -240,7 +225,6 @@ impl ServerMetrics {
         }
     }
 
-    /// Record a compaction run with level label.
     pub fn record_compaction(&self, level: u32, duration_secs: f64, bytes_read: u64, bytes_written: u64) {
         let attrs = [KeyValue::new("level", level as i64)];
         self.compaction_runs.add(1, &attrs);
@@ -249,7 +233,6 @@ impl ServerMetrics {
         self.compaction_bytes_written.add(bytes_written, &attrs);
     }
 
-    /// Record segment count change with level label.
     pub fn record_segment_change(&self, level: u32, count_delta: i64, bytes_delta: i64) {
         let attrs = [KeyValue::new("level", level as i64)];
         self.segment_count.add(count_delta, &attrs);
@@ -257,7 +240,6 @@ impl ServerMetrics {
     }
 }
 
-/// Recursively compute total file size under a directory.
 fn dir_size(path: &str) -> u64 {
     let mut total: u64 = 0;
     let mut stack = vec![std::path::PathBuf::from(path)];
@@ -277,9 +259,6 @@ fn dir_size(path: &str) -> u64 {
     total
 }
 
-/// Register disk usage gauge that reports bytes used per data directory component.
-/// Each directory is tagged with a "component" label (wal, index, blob).
-/// The returned handle must be kept alive for the gauge to be reported.
 pub fn register_disk_usage_gauge(meter: &Meter, labeled_dirs: Vec<(String, String)>) -> ObservableGauge<u64> {
     info!(dirs = ?labeled_dirs, "registering disk usage gauge");
     meter
@@ -294,7 +273,6 @@ pub fn register_disk_usage_gauge(meter: &Meter, labeled_dirs: Vec<(String, Strin
         .build()
 }
 
-/// Register a gauge that reports the total filesystem capacity of the data directory.
 pub fn register_disk_capacity_gauge(meter: &Meter, data_dir: String) -> ObservableGauge<u64> {
     meter
         .u64_observable_gauge("chronicle.server.disk.capacity_bytes")
@@ -312,8 +290,6 @@ pub fn register_disk_capacity_gauge(meter: &Meter, data_dir: String) -> Observab
         .build()
 }
 
-/// Register RocksDB ticker gauges that are polled on each Prometheus scrape.
-/// The returned handles must be kept alive for the gauges to be reported.
 pub fn register_rocksdb_gauges(meter: &Meter, storage: crate::storage::index::Storage) -> Vec<ObservableGauge<u64>> {
     use rocksdb::statistics::Ticker;
 
@@ -339,8 +315,6 @@ pub fn register_rocksdb_gauges(meter: &Meter, storage: crate::storage::index::St
     }).collect()
 }
 
-/// Initialize the OpenTelemetry meter provider with Prometheus exporter.
-/// Returns the provider, meter, and prometheus registry for the HTTP endpoint.
 pub fn init_meter_provider() -> (SdkMeterProvider, Meter, Registry) {
     let registry = Registry::new();
     let exporter = opentelemetry_prometheus::exporter()
@@ -348,18 +322,15 @@ pub fn init_meter_provider() -> (SdkMeterProvider, Meter, Registry) {
         .build()
         .expect("failed to build prometheus exporter");
 
-    // Sub-millisecond buckets for request latency: 50us to 10s
     let latency_boundaries = vec![
         0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005,
         0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
     ];
-    // Compaction can take longer: 1ms to 60s
     let compaction_boundaries = vec![
         0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5,
         1.0, 2.5, 5.0, 10.0, 30.0, 60.0,
     ];
 
-    // View: apply sub-millisecond buckets to all latency histograms except compaction.
     let lb = latency_boundaries.clone();
     let latency_view = move |inst: &Instrument| -> Option<Stream> {
         if inst.kind == Some(InstrumentKind::Histogram)
@@ -379,7 +350,6 @@ pub fn init_meter_provider() -> (SdkMeterProvider, Meter, Registry) {
         }
     };
 
-    // View: apply compaction-specific buckets to compaction latency.
     let cb = compaction_boundaries;
     let compaction_view = move |inst: &Instrument| -> Option<Stream> {
         if inst.kind == Some(InstrumentKind::Histogram)

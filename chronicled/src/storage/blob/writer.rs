@@ -26,7 +26,6 @@ impl BlobWriter {
         }
     }
 
-    /// Write raw pre-formatted entry bytes (header + proto) without decode/encode.
     pub async fn write_raw(&mut self, raw: &[u8]) -> Result<(u64, u32), UnitError> {
         let total_len = raw.len() as u32;
         let entry_start = self
@@ -41,12 +40,6 @@ impl BlobWriter {
         Ok((entry_start, total_len))
     }
 
-    /// Copy a contiguous range from a source file into this segment.
-    ///
-    /// On Linux, uses `copy_file_range` for zero-copy kernel transfer.
-    /// On other platforms, reads into a buffer and writes.
-    ///
-    /// Returns the destination start offset.
     pub fn write_range_from(
         &mut self,
         source: &File,

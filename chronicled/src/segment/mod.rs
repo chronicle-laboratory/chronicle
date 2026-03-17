@@ -14,13 +14,10 @@ pub trait Segment: Send {
     fn offset(&self) -> u64;
     fn size(&self) -> u64;
 
-    /// Returns the underlying file for zero-copy operations.
-    /// Default returns None (not supported).
     fn as_std_file(&self) -> Option<&std::fs::File> {
         None
     }
 
-    /// Advance the write offset after an external write (e.g. copy_file_range).
     fn advance_offset(&mut self, bytes: u64) {
         let _ = bytes;
     }

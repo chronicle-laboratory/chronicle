@@ -2,10 +2,6 @@ use std::fs::File;
 use std::io;
 use std::os::unix::fs::FileExt;
 
-/// Copy `length` bytes from `src` at `src_offset` into `dst` at `dst_offset`.
-///
-/// On Linux, uses `copy_file_range` for zero-copy kernel-level transfer.
-/// On other platforms, reads into a userspace buffer and writes.
 pub fn copy_range(
     src: &File,
     src_offset: u64,
@@ -58,7 +54,6 @@ fn copy_range_linux(
 
         if ret < 0 {
             let err = io::Error::last_os_error();
-            // ENOSYS / EXDEV: kernel doesn't support it or cross-filesystem
             if err.raw_os_error() == Some(libc::ENOSYS)
                 || err.raw_os_error() == Some(libc::EXDEV)
             {
@@ -113,13 +108,12 @@ mod tests {
 
         {
             let mut f = File::create(&dst_path).unwrap();
-            f.write_all(b"\0\0\0\0\0").unwrap(); // 5 bytes padding
+            f.write_all(b"\0\0\0\0\0").unwrap();
         }
 
         let src = File::open(&src_path).unwrap();
         let dst = File::options().write(true).open(&dst_path).unwrap();
 
-        // Copy "world" (offset 6, length 5) to dst at offset 5
         let copied = copy_range(&src, 6, &dst, 5, 5).unwrap();
         assert_eq!(copied, 5);
 

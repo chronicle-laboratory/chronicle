@@ -1,16 +1,6 @@
 use std::io::{Error, ErrorKind};
 use xxhash_rust::xxh32::xxh32;
 
-// +---------+-----------+-----------+----------------+--- ... ---+
-// |CRC (4B) | Size (2B) | Type (1B) | Log number (4B)| Payload   |
-// +---------+-----------+-----------+----------------+--- ... ---+
-//
-// CRC: XXH32 checksum computed over the type, log number, and payload
-// Size: Length of the payload data (little-endian u16)
-// Type: Type of record (Full, First, Middle, Last)
-// Log number: 32bit log file number
-// Payload: Byte stream as long as specified by the payload size
-
 const CRC_SIZE: usize = 4;
 const SIZE_FIELD_SIZE: usize = 2;
 const TYPE_SIZE: usize = 1;
@@ -91,7 +81,6 @@ impl Record {
         let size = self.data.len() as u16;
         let record_type = self.record_type as u8;
 
-        // CRC over type + log_number + payload
         let mut crc_data = Vec::with_capacity(1 + 4 + self.data.len());
         crc_data.push(record_type);
         crc_data.extend_from_slice(&self.log_number.to_le_bytes());
@@ -136,7 +125,6 @@ impl Record {
 
         let data = &bytes[RECORD_HEADER_SIZE..total_size];
 
-        // Verify CRC
         let mut crc_data = Vec::with_capacity(1 + 4 + size);
         crc_data.push(record_type_byte);
         crc_data.extend_from_slice(&log_number.to_le_bytes());
@@ -237,7 +225,6 @@ mod tests {
         let record = Record::new(data);
         let mut encoded = record.encode().unwrap();
 
-        // Corrupt the data
         encoded[RECORD_HEADER_SIZE] = encoded[RECORD_HEADER_SIZE].wrapping_add(1);
 
         let result = Record::decode(&encoded);
@@ -315,7 +302,7 @@ mod tests {
 
     #[test]
     fn test_large_record() {
-        let data = vec![0xAB; 32 * 1024]; // 32KB
+        let data = vec![0xAB; 32 * 1024];
         let record = Record::new(data.clone());
         let encoded = record.encode().unwrap();
 

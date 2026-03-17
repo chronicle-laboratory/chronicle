@@ -11,12 +11,10 @@ struct Cli {
 
 #[derive(clap::Subcommand)]
 enum Commands {
-    /// Manage a unit (storage node) server
     Unit {
         #[command(subcommand)]
         action: UnitAction,
     },
-    /// Run continuous verification against a live cluster
     Verify(VerifyArgs),
 }
 

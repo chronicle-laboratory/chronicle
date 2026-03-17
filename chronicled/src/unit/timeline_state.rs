@@ -23,8 +23,6 @@ impl TimelineStateManager {
         }
     }
 
-    /// Check if the request term is valid for this timeline.
-    /// Returns Ok(()) if valid, Err(current_term) if stale.
     pub fn check_term(&self, timeline_id: i64, request_term: i64) -> Result<(), i64> {
         match self.states.get(&timeline_id) {
             Some(state) => {
@@ -38,8 +36,6 @@ impl TimelineStateManager {
         }
     }
 
-    /// Fence a timeline with a new term. Returns the current LRA.
-    /// Only succeeds if new_term > current term.
     pub fn fence(&self, timeline_id: i64, new_term: i64) -> Result<i64, i64> {
         let mut entry = self
             .states
@@ -55,7 +51,6 @@ impl TimelineStateManager {
         Ok(state.lra)
     }
 
-    /// Advance the LRA for a timeline. Only moves forward, never backward.
     pub fn update_lra(&self, timeline_id: i64, lra: i64) {
         let mut entry = self
             .states
@@ -67,7 +62,6 @@ impl TimelineStateManager {
         }
     }
 
-    /// Get the current state for a timeline.
     pub fn get_state(&self, timeline_id: i64) -> Option<TimelineState> {
         self.states.get(&timeline_id).map(|s| s.clone())
     }
@@ -97,13 +91,10 @@ mod tests {
     #[test]
     fn test_fence_returns_lra() {
         let mgr = TimelineStateManager::new();
-        // Initial fence, LRA is -1
         assert_eq!(mgr.fence(1, 1).unwrap(), -1);
 
-        // Update LRA
         mgr.update_lra(1, 10);
 
-        // Fence again, should return current LRA
         assert_eq!(mgr.fence(1, 2).unwrap(), 10);
     }
 
@@ -123,10 +114,10 @@ mod tests {
         mgr.update_lra(1, 10);
         assert_eq!(mgr.get_state(1).unwrap().lra, 10);
 
-        mgr.update_lra(1, 5); // Should not go backward
+        mgr.update_lra(1, 5);
         assert_eq!(mgr.get_state(1).unwrap().lra, 10);
 
-        mgr.update_lra(1, 20); // Should advance
+        mgr.update_lra(1, 20);
         assert_eq!(mgr.get_state(1).unwrap().lra, 20);
     }
 

@@ -1,6 +1,6 @@
-use crate::client::unit_client::UnitClient;
+use crate::conn::UnitClient;
 use crate::error::ChronicleError;
-use crate::{Cursor, Offset};
+use crate::{Cursor, FetchedEvent};
 use chronicle_proto::pb_catalog::Segment;
 use chronicle_proto::pb_ext::{ChunkType, FetchEventsRequest};
 use futures_util::{Stream, StreamExt};
@@ -8,20 +8,24 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::warn;
 
-type EventStream = Pin<Box<dyn Stream<Item = Result<(Offset, Vec<u8>), ChronicleError>> + Send>>;
+type EventStream = Pin<Box<dyn Stream<Item = Result<FetchedEvent, ChronicleError>> + Send>>;
 
-/// Queue-based streaming cursor for a timeline.
-///
-/// Wraps a gRPC fetch stream behind a simple pull-based API. Call `fetch()`
-/// to get the next event or `seek()` to jump to a different offset.
+const MAX_RETRIES: usize = 5;
+const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const MAX_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
 pub struct TimelineCursor {
     timeline_id: i64,
     segments: Vec<Segment>,
     unit_clients: HashMap<String, UnitClient>,
     position: Arc<AtomicI64>,
     stream: Option<EventStream>,
+    tail: bool,
+    poll_interval: Duration,
+    current_backoff: Duration,
 }
 
 impl TimelineCursor {
@@ -37,12 +41,21 @@ impl TimelineCursor {
             unit_clients: unit_clients.clone(),
             position: Arc::new(AtomicI64::new(start)),
             stream: None,
+            tail: false,
+            poll_interval: DEFAULT_POLL_INTERVAL,
+            current_backoff: DEFAULT_POLL_INTERVAL,
         }
     }
 
-    /// Current read position (next offset to be consumed).
-    pub fn position(&self) -> i64 {
-        self.position.load(Ordering::Relaxed)
+    pub fn with_tail(mut self) -> Self {
+        self.tail = true;
+        self
+    }
+
+    pub fn with_poll_interval(mut self, interval: Duration) -> Self {
+        self.poll_interval = interval;
+        self.current_backoff = interval;
+        self
     }
 
     fn segment_for_offset(segments: &[Segment], offset: i64) -> Result<&Segment, ChronicleError> {
@@ -69,7 +82,6 @@ impl TimelineCursor {
         ))
     }
 
-    /// Open a new fetch stream starting at the given offset.
     async fn open_stream(
         timeline_id: i64,
         segments: &[Segment],
@@ -104,16 +116,15 @@ impl TimelineCursor {
                     ChunkType::Full | ChunkType::Last
                 );
                 for event in response.event {
-                    let offset = Offset {
-                        timeline_id: event.timeline_id,
+                    let fetched = FetchedEvent {
                         offset: event.offset,
+                        timestamp: event.timestamp,
+                        payload: event.payload.map(|b| b.to_vec()).unwrap_or_default(),
+                        key: None,
+                        schema_id: if event.schema_id != 0 { Some(event.schema_id) } else { None },
                     };
-                    let payload = event
-                        .payload
-                        .map(|b| b.to_vec())
-                        .unwrap_or_default();
                     position.store(event.offset + 1, Ordering::Relaxed);
-                    yield (offset, payload);
+                    yield fetched;
                 }
                 if is_final {
                     break;
@@ -125,11 +136,9 @@ impl TimelineCursor {
     }
 }
 
-const MAX_CURSOR_RETRIES: usize = 5;
-
 #[async_trait::async_trait]
 impl Cursor for TimelineCursor {
-    async fn fetch(&mut self) -> Result<Option<(Offset, Vec<u8>)>, ChronicleError> {
+    async fn fetch(&mut self) -> Result<Option<FetchedEvent>, ChronicleError> {
         let mut retries = 0;
         loop {
             if self.stream.is_none() {
@@ -146,10 +155,13 @@ impl Cursor for TimelineCursor {
 
             let stream = self.stream.as_mut().unwrap();
             match stream.next().await {
-                Some(Ok(item)) => return Ok(Some(item)),
+                Some(Ok(item)) => {
+                    self.current_backoff = self.poll_interval;
+                    return Ok(Some(item));
+                }
                 Some(Err(e)) => {
                     retries += 1;
-                    if retries > MAX_CURSOR_RETRIES {
+                    if retries > MAX_RETRIES {
                         return Err(e);
                     }
                     warn!(
@@ -158,10 +170,19 @@ impl Cursor for TimelineCursor {
                         "fetch stream error, reconnecting"
                     );
                     self.stream = None;
-                    let backoff = std::time::Duration::from_millis(100 * (1 << retries.min(5)));
+                    let backoff = Duration::from_millis(100 * (1 << retries.min(5)));
                     tokio::time::sleep(backoff).await;
                 }
-                None => return Ok(None),
+                None => {
+                    if self.tail {
+                        tokio::time::sleep(self.current_backoff).await;
+                        self.current_backoff =
+                            (self.current_backoff * 2).min(MAX_POLL_INTERVAL);
+                        self.stream = None;
+                        continue;
+                    }
+                    return Ok(None);
+                }
             }
         }
     }
@@ -169,6 +190,7 @@ impl Cursor for TimelineCursor {
     fn seek(&mut self, offset: i64) {
         self.position.store(offset, Ordering::Relaxed);
         self.stream = None;
+        self.current_backoff = self.poll_interval;
     }
 
     fn position(&self) -> i64 {

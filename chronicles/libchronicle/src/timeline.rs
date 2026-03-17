@@ -1,8 +1,6 @@
-use crate::client::unit_client::UnitClient;
+use crate::conn::UnitClient;
 use crate::error::ChronicleError;
-use crate::writer::ensemble::select_ensemble;
-use crate::writer::reconciliation::ReconciledState;
-use crate::{Offset, Writer};
+use crate::{Event as UserEvent, RecordResult, Writer};
 use catalog::Catalog;
 use chronicle_proto::pb_catalog::{Segment, TimelineStatus};
 use chronicle_proto::pb_ext::{
@@ -14,7 +12,129 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-// ─── Internal types ─────────────────────────────────────────────────────────
+#[derive(Debug, Clone)]
+pub(crate) struct ReconciledState {
+    pub term: i64,
+    pub lra: i64,
+    pub lrs: i64,
+    pub segments: Vec<Segment>,
+    pub writable_segment: Segment,
+    pub catalog_version: i64,
+}
+
+pub(crate) async fn reconcile(
+    catalog: &dyn Catalog,
+    unit_clients: &HashMap<String, UnitClient>,
+    timeline_name: &str,
+) -> Result<ReconciledState, ChronicleError> {
+    let mut tc = catalog.get_timeline(timeline_name).await?;
+    let new_term = tc.term + 1;
+    tc.term = new_term;
+    let tc = catalog.put_timeline(&tc, tc.version).await?;
+
+    info!(
+        timeline = timeline_name,
+        timeline_id = tc.timeline_id,
+        term = new_term,
+        "reconciliation: starting"
+    );
+
+    let last_segment = tc.segments.last().ok_or_else(|| {
+        ChronicleError::ReconciliationFailed("timeline has no segments".into())
+    })?;
+    let ensemble = &last_segment.ensemble;
+
+    let mut max_lra: i64 = 0;
+
+    for endpoint in ensemble {
+        let client = unit_clients.get(endpoint).ok_or_else(|| {
+            ChronicleError::EnsembleUnavailable(format!("no client for unit {}", endpoint))
+        })?;
+
+        let mut attempts: u64 = 0;
+        let response = loop {
+            attempts += 1;
+            match client.fence(tc.timeline_id, new_term).await {
+                Ok(resp) => break resp,
+                Err(e) if attempts < 5 => {
+                    warn!(
+                        endpoint = endpoint.as_str(),
+                        attempt = attempts,
+                        error = %e,
+                        "reconciliation: fence request failed, retrying"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(100 * attempts)).await;
+                }
+                Err(e) => {
+                    return Err(ChronicleError::ReconciliationFailed(format!(
+                        "failed to fence unit {}: {}",
+                        endpoint, e
+                    )));
+                }
+            }
+        };
+
+        if response.code == StatusCode::Ok as i32 {
+            info!(
+                endpoint = endpoint.as_str(),
+                lra = response.lra,
+                "reconciliation: unit fenced"
+            );
+            if response.lra > max_lra {
+                max_lra = response.lra;
+            }
+        } else if response.code == StatusCode::Fenced as i32 {
+            return Err(ChronicleError::Fenced {
+                timeline_id: tc.timeline_id,
+                term: response.term,
+            });
+        } else {
+            return Err(ChronicleError::InvalidTerm {
+                current: response.term,
+                requested: new_term,
+            });
+        }
+    }
+
+    let new_lra = max_lra;
+
+    let mut new_segments: Vec<Segment> = tc
+        .segments
+        .iter()
+        .filter(|seg| seg.start_offset <= new_lra)
+        .cloned()
+        .collect();
+
+    let writable_segment = Segment {
+        id: new_segments.last().map_or(1, |s| s.id + 1),
+        ensemble: ensemble.clone(),
+        start_offset: new_lra + 1,
+    };
+    new_segments.push(writable_segment.clone());
+
+    let mut updated = tc.clone();
+    updated.status = TimelineStatus::Active as i32;
+    updated.segments = new_segments.clone();
+    updated.lra = new_lra;
+    let updated = catalog.put_timeline(&updated, tc.version).await?;
+
+    info!(
+        timeline = timeline_name,
+        term = new_term,
+        lra = new_lra,
+        segments = updated.segments.len(),
+        "reconciliation: complete"
+    );
+
+    Ok(ReconciledState {
+        term: new_term,
+        lra: new_lra,
+        lrs: new_lra,
+        segments: updated.segments,
+        writable_segment,
+        catalog_version: updated.version,
+    })
+}
 
 struct InnerState {
     timeline_id: i64,
@@ -34,13 +154,6 @@ struct InnerState {
     senders: HashMap<String, mpsc::Sender<RecordEventsRequest>>,
 }
 
-// ─── Timeline ───────────────────────────────────────────────────────
-
-/// Core write-path state machine implementing the TLA+ `TimelineState`.
-///
-/// Sends events to ALL units in the writable segment's ensemble. Acks are
-/// collected asynchronously by background tasks; the LRA advances once every
-/// unit has acknowledged an offset contiguously from the previous LRA.
 pub struct Timeline {
     timeline_id: i64,
     inner: Arc<Mutex<InnerState>>,
@@ -56,20 +169,14 @@ impl Drop for Timeline {
 }
 
 impl Timeline {
-    /// Create a brand-new timeline (TLA+ `OpenNewTimeline`).
-    ///
-    /// Selects an ensemble, CAS-creates the catalog entry with the first
-    /// segment and term=1, then opens record streams to all ensemble units.
     pub async fn create(
         catalog: &dyn Catalog,
         unit_clients: &HashMap<String, UnitClient>,
         name: &str,
         replication_factor: usize,
     ) -> Result<Self, ChronicleError> {
-        // Create timeline entry in catalog.
         let tc = catalog.create_timeline(name).await?;
 
-        // Select ensemble from available units.
         let available: Vec<String> = unit_clients.keys().cloned().collect();
         let ensemble = select_ensemble(&available, &[], &[], replication_factor).ok_or_else(
             || {
@@ -81,14 +188,12 @@ impl Timeline {
             },
         )?;
 
-        // Build first segment.
         let first_segment = Segment {
             id: 1,
             ensemble: ensemble.clone(),
             start_offset: 1,
         };
 
-        // CAS catalog with segment, term=1, status=ACTIVE.
         let mut updated = tc.clone();
         updated.status = TimelineStatus::Active as i32;
         updated.segments = vec![first_segment.clone()];
@@ -105,21 +210,20 @@ impl Timeline {
         Self::open_inner(
             updated.timeline_id,
             name,
-            1,   // term
+            1,
             updated.segments.clone(),
             first_segment,
-            0,   // lrs
-            0,   // lra
+            0,
+            0,
             updated.version,
             replication_factor,
-            false, // needs_trunc
+            false,
             unit_clients,
         )
         .await
     }
 
-    /// Open a timeline after reconciliation has completed.
-    pub async fn open(
+    pub(crate) async fn open(
         reconciled: ReconciledState,
         unit_clients: &HashMap<String, UnitClient>,
         name: &str,
@@ -136,14 +240,12 @@ impl Timeline {
             reconciled.lra,
             reconciled.catalog_version,
             replication_factor,
-            true, // first write after reconciliation uses trunc=true
+            true,
             unit_clients,
         )
         .await
     }
 
-    /// Shared construction: build inner state, open record streams, spawn
-    /// background ack-collector tasks.
     #[allow(clippy::too_many_arguments)]
     async fn open_inner(
         timeline_id: i64,
@@ -192,7 +294,6 @@ impl Timeline {
             }));
         }
 
-        // Store senders so record() can use them immediately.
         {
             let mut state = inner.lock().unwrap();
             state.senders = senders;
@@ -205,16 +306,10 @@ impl Timeline {
         })
     }
 
-    // ── Accessors ───────────────────────────────────────────────────────
-
     pub fn timeline_id(&self) -> i64 {
         self.timeline_id
     }
 
-    // ── Ensemble change (TLA+ TimelineEnsembleChange) ───────────────────
-
-    /// Replace failed units with a new ensemble, creating a new segment at
-    /// LRA+1 and CAS-updating the catalog.
     pub async fn handle_ensemble_change(
         &self,
         catalog: &dyn Catalog,
@@ -241,14 +336,12 @@ impl Timeline {
             state.segments.push(new_seg.clone());
             state.writable_segment = Some(new_seg.clone());
 
-            // Remove acks from failed units for offsets not yet committed.
             for (_offset, acked_set) in state.acked.iter_mut() {
                 for fu in failed_units {
                     acked_set.remove(fu);
                 }
             }
 
-            // Remove senders for failed units.
             for fu in failed_units {
                 state.senders.remove(fu);
             }
@@ -256,14 +349,11 @@ impl Timeline {
             (new_seg, state.catalog_version, state.name.clone())
         };
 
-        // CAS-update the catalog with the new segment.
         let tc = catalog.get_timeline(&name).await?;
         let mut updated = tc.clone();
         updated.segments.push(new_seg.clone());
         catalog.put_timeline(&updated, catalog_version).await?;
 
-        // Spawn ack_collector tasks for new ensemble members that weren't
-        // already connected (the reconnect loop handles existing ones).
         for endpoint in &new_seg.ensemble {
             let has_sender = {
                 let state = self.inner.lock().unwrap();
@@ -296,13 +386,9 @@ impl Timeline {
     }
 }
 
-// ─── Writer trait impl ──────────────────────────────────────────────────────
-
 #[async_trait::async_trait]
 impl Writer for Timeline {
-    /// Assign the next offset, fire the event to ALL units in the writable
-    /// segment, and return immediately. Acks are collected asynchronously.
-    async fn record(&self, schema_id: i64, event: Vec<u8>) -> Result<Offset, ChronicleError> {
+    async fn record(&self, event: UserEvent) -> Result<RecordResult, ChronicleError> {
         let (offset, request, senders) = {
             let mut state = self.inner.lock().unwrap();
 
@@ -313,7 +399,6 @@ impl Writer for Timeline {
                 .ensemble
                 .clone();
 
-            // Assign next offset (TLA+: offset = lrs + 1).
             let offset = state.lrs + 1;
             state.lrs = offset;
 
@@ -322,24 +407,23 @@ impl Writer for Timeline {
                 .unwrap()
                 .as_millis() as i64;
 
-            let event = Event {
+            let proto_event = Event {
                 timeline_id: state.timeline_id,
                 term: state.term,
                 offset,
-                payload: Some(event.into()),
+                payload: Some(event.payload.into()),
                 crc32: None,
                 timestamp: now,
-                schema_id,
+                schema_id: event.schema_id.unwrap_or(0),
             };
 
             let item = RecordEventsRequestItem {
-                event: Some(event),
+                event: Some(proto_event),
                 trunc: state.needs_trunc,
                 lra: state.lra,
             };
             state.needs_trunc = false;
 
-            // Initialize acked set for this offset.
             state.acked.insert(offset, HashSet::new());
 
             let senders: Vec<mpsc::Sender<RecordEventsRequest>> = ensemble
@@ -350,26 +434,43 @@ impl Writer for Timeline {
             (offset, RecordEventsRequest { items: vec![item] }, senders)
         };
 
-        // Send to ALL units outside the lock.
         for sender in &senders {
             if let Err(e) = sender.send(request.clone()).await {
                 warn!(offset, error = %e, "failed to send record to unit");
             }
         }
 
-        Ok(Offset {
+        Ok(RecordResult {
             timeline_id: self.timeline_id,
             offset,
         })
     }
 }
 
-// ─── Background ack collector ───────────────────────────────────────────────
+fn select_ensemble(
+    available: &[String],
+    include: &[String],
+    exclude: &[String],
+    rf: usize,
+) -> Option<Vec<String>> {
+    let mut ensemble: Vec<String> = include.to_vec();
 
-/// Reads responses from a single unit's Record stream and updates the shared
-/// acked state. Advances LRA when all units have acked contiguously.
-///
-/// If the stream breaks, attempts to reconnect and re-open.
+    for unit in available {
+        if ensemble.len() >= rf {
+            break;
+        }
+        if !ensemble.contains(unit) && !exclude.contains(unit) {
+            ensemble.push(unit.clone());
+        }
+    }
+
+    if ensemble.len() >= rf {
+        Some(ensemble)
+    } else {
+        None
+    }
+}
+
 async fn ack_collector(
     inner: Arc<Mutex<InnerState>>,
     endpoint: String,
@@ -382,7 +483,6 @@ async fn ack_collector(
     let mut response_stream = initial_stream;
 
     loop {
-        // Process responses until the stream ends.
         while let Ok(Some(response)) = response_stream.message().await {
             let mut state = inner.lock().unwrap();
 
@@ -404,7 +504,6 @@ async fn ack_collector(
                 }
             }
 
-            // Advance LRA: scan contiguous fully-acked offsets (TLA+ FindMaxContinuousAck).
             let rf = state.replication_factor;
             while state.lra < state.lrs {
                 let next = state.lra + 1;
@@ -419,12 +518,10 @@ async fn ack_collector(
                 }
             }
 
-            // Prune acked entries for committed offsets.
             let lra = state.lra;
             state.acked.retain(|&offset, _| offset > lra);
         }
 
-        // Stream ended — remove dead sender and try to reconnect.
         {
             let mut state = inner.lock().unwrap();
             state.senders.remove(&endpoint);
@@ -453,5 +550,40 @@ async fn ack_collector(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn select_ensemble_basic() {
+        let available = vec!["a".into(), "b".into(), "c".into()];
+        let result = select_ensemble(&available, &[], &[], 2).unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn select_ensemble_with_include() {
+        let available = vec!["a".into(), "b".into(), "c".into()];
+        let include = vec!["b".into()];
+        let result = select_ensemble(&available, &include, &[], 2).unwrap();
+        assert!(result.contains(&"b".to_string()));
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn select_ensemble_with_exclude() {
+        let available = vec!["a".into(), "b".into(), "c".into()];
+        let exclude = vec!["a".into(), "b".into()];
+        let result = select_ensemble(&available, &[], &exclude, 2);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn select_ensemble_insufficient() {
+        let available = vec!["a".into()];
+        assert!(select_ensemble(&available, &[], &[], 2).is_none());
     }
 }

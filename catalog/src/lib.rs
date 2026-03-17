@@ -11,7 +11,6 @@ use tracing::info;
 
 #[async_trait]
 pub trait Catalog: Send + Sync {
-    // Timeline operations
     async fn get_timeline(&self, name: &str) -> Result<TimelineCatalog, CatalogError>;
     async fn put_timeline(
         &self,
@@ -22,7 +21,6 @@ pub trait Catalog: Send + Sync {
     async fn delete_timeline(&self, name: &str) -> Result<(), CatalogError>;
     async fn list_timelines(&self) -> Result<Vec<TimelineCatalog>, CatalogError>;
 
-    // Unit operations
     async fn register_unit(
         &self,
         registration: &UnitRegistration,
@@ -59,7 +57,6 @@ fn default_catalog_namespace() -> String {
     "default".to_string()
 }
 
-/// Build a [`Catalog`] implementation from the given options.
 pub async fn build_catalog(
     options: &CatalogOptions,
 ) -> Result<Arc<dyn Catalog>, CatalogError> {

@@ -43,7 +43,6 @@ impl TimelineReader for LevelIterator {
         let index_entries = self.index.scan_index(timeline_id, start_offset, end_offset);
         let segment_manager = self.segment_manager.clone();
 
-        // Merge write cache events and index entries into a single sorted event stream.
         let wc_offsets: HashSet<i64> = wc_events.iter().map(|e| e.offset).collect();
 
         let mut wc_iter = wc_events.into_iter().peekable();

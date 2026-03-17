@@ -9,7 +9,6 @@ use tracing::{info, warn};
 use crate::storage::blob::manager::SegmentManager;
 use crate::storage::index::Storage;
 
-/// Background task that deletes segments older than the configured TTL.
 pub struct RetentionManager {
     handle: JoinHandle<()>,
 }
@@ -46,7 +45,6 @@ impl RetentionManager {
     }
 }
 
-/// Delete segments whose `created_at` is older than `now - ttl_ms`.
 fn run_retention(
     segment_manager: &SegmentManager,
     index: &Storage,
@@ -58,7 +56,6 @@ fn run_retention(
         .as_millis() as i64;
     let cutoff = now - ttl_ms;
 
-    // Only evict fully compacted segments (L3+).
     let mut expired_ids = Vec::new();
     for level in 3..=4 {
         for meta in segment_manager.segments_at_level(level) {
@@ -74,7 +71,6 @@ fn run_retention(
 
     info!(count = expired_ids.len(), "retention: evicting expired segments");
 
-    // Collect index entries that point to expired segments and delete them.
     let expired_set: HashSet<u64> = expired_ids.iter().copied().collect();
     let entries = index.scan_by_segment_ids(&expired_set);
     if !entries.is_empty() {
@@ -86,7 +82,6 @@ fn run_retention(
         info!(entries = entries.len(), "retention: deleted expired index entries");
     }
 
-    // Remove segment files.
     segment_manager.remove_segments(&expired_ids);
     info!(segments = expired_ids.len(), "retention: removed expired segments");
 }

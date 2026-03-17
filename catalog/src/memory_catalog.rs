@@ -8,10 +8,6 @@ use std::sync::Mutex;
 use crate::Catalog;
 use crate::error::CatalogError;
 
-/// In-memory [`Catalog`] implementation.
-///
-/// Useful for testing and examples where an Oxia cluster is not available.
-/// All state lives in process memory and is lost on drop.
 pub struct MemoryCatalog {
     timelines: Mutex<HashMap<String, TimelineCatalog>>,
     units: DashMap<String, UnitRegistration>,
@@ -42,7 +38,6 @@ impl Default for MemoryCatalog {
 
 #[async_trait]
 impl Catalog for MemoryCatalog {
-    // ── Timeline operations ─────────────────────────────────────────────
 
     async fn get_timeline(&self, name: &str) -> Result<TimelineCatalog, CatalogError> {
         self.timelines
@@ -101,8 +96,6 @@ impl Catalog for MemoryCatalog {
     async fn list_timelines(&self) -> Result<Vec<TimelineCatalog>, CatalogError> {
         Ok(self.timelines.lock().unwrap().values().cloned().collect())
     }
-
-    // ── Unit operations ──────────────────────────────────────────────────
 
     async fn register_unit(
         &self,

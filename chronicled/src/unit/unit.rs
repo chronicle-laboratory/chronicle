@@ -34,9 +34,7 @@ use tracing::{error, info, warn};
 const DEFAULT_ACTOR_NUM: usize = 4;
 const DEFAULT_INFLIGHT_NUM: usize = 4096;
 
-/// Minimum available disk percentage before switching to readonly.
 const DISK_LOW_WATERMARK_PCT: f64 = 5.0;
-/// Disk percentage to recover from readonly back to writable.
 const DISK_HIGH_WATERMARK_PCT: f64 = 10.0;
 
 pub struct Unit {
@@ -179,7 +177,6 @@ impl Unit {
             "compaction pipeline started"
         );
 
-        // Spawn retention manager if TTL is configured.
         let retention_manager = options.retention.ttl_hours.map(|ttl_hours| {
             let ttl_ms = ttl_hours as i64 * 3600 * 1000;
             let interval = Duration::from_secs(options.retention.interval_secs);
@@ -218,7 +215,6 @@ impl Unit {
             prometheus_registry,
         );
 
-        // Spawn health monitor (disk watcher).
         let health_handle = bg_health_monitor(
             context.clone(),
             unit_state,
@@ -231,8 +227,6 @@ impl Unit {
             address: address.clone(),
             status: UnitStatus::Writable.into(),
         };
-        // Retry registration — the Oxia client session may not be fully
-        // ready on first attempt after build().
         let mut last_err = None;
         for attempt in 0..10 {
             let cat_start = std::time::Instant::now();
@@ -286,7 +280,6 @@ impl Unit {
             info!(address = %self.address, "unit unregistered from catalog");
         }
 
-        // Cancel WAL writer first to stop accepting new writes.
         self.wal.cancel();
 
         self.context.cancel();
@@ -318,7 +311,6 @@ fn bg_start_external_service(
             .set_serving::<ChronicleServer<UnitService>>()
             .await;
 
-        // Spawn Prometheus metrics HTTP endpoint on gRPC port + 1.
         let metrics_addr = std::net::SocketAddr::new(
             options.bind_address.ip(),
             options.bind_address.port() + 1,
@@ -342,8 +334,6 @@ fn bg_start_external_service(
     })
 }
 
-/// Background health monitor that watches disk usage and flips
-/// unit state between WRITABLE and READONLY.
 fn bg_health_monitor(
     context: CancellationToken,
     state: Arc<AtomicU8>,

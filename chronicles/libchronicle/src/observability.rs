@@ -1,10 +1,5 @@
 use opentelemetry::metrics::{Counter, Histogram, Meter, MeterProvider};
 
-/// Client-side metrics for libchronicle.
-///
-/// Users pass an `opentelemetry::metrics::Meter` when constructing
-/// the `Chronicle` client. If no meter is provided, a no-op meter
-/// is used and all recording is zero-cost.
 #[derive(Clone)]
 pub struct ClientMetrics {
     pub write_requests: Counter<u64>,
@@ -67,7 +62,6 @@ impl ClientMetrics {
         }
     }
 
-    /// Create a no-op metrics instance (zero-cost when no meter is provided).
     pub fn noop() -> Self {
         let provider = opentelemetry_sdk::metrics::SdkMeterProvider::builder().build();
         let meter = provider.meter("noop");

@@ -52,7 +52,6 @@ impl Chronicle for UnitService {
         &self,
         request: Request<Streaming<RecordEventsRequest>>,
     ) -> Result<Response<Self::RecordStream>, Status> {
-        // Reject writes when unit is READONLY.
         if self.unit_state.load(Ordering::Relaxed) == STATE_READONLY {
             return Err(Status::unavailable("unit is readonly"));
         }
@@ -94,7 +93,6 @@ impl Chronicle for UnitService {
                                 }
                                 continue;
                             }
-                            // Wait for actor response
                             if let Some(result) = item_rx.recv().await {
                                 match result {
                                     Ok(event) => {
@@ -168,7 +166,6 @@ impl Chronicle for UnitService {
                             }
                             continue;
                         }
-                        // Forward actor responses
                         let mut event_count = 0u64;
                         while let Some(result) = item_rx.recv().await {
                             if let Ok(ref resp) = result {

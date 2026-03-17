@@ -1,5 +1,5 @@
-use libchronicle::chronicle::{Chronicle, ChronicleConfig};
-use libchronicle::{Cursor, Writer};
+use libchronicle::chronicle::{Chronicle, ChronicleOptions};
+use libchronicle::{Cursor, Event, Writer};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -10,56 +10,40 @@ use tracing::{error, info, warn};
 
 #[derive(clap::Args)]
 pub struct VerifyArgs {
-    /// Catalog service address (e.g. oxia:6648)
     #[arg(long)]
     pub catalog: String,
 
-    /// Catalog backend type
     #[arg(long, default_value = "oxia")]
     pub backend: String,
 
-    /// Unit addresses to connect to directly (comma-separated).
-    /// Bypasses catalog unit discovery if set.
     #[arg(long)]
     pub units: Option<String>,
 
-    /// Number of timelines to write concurrently
     #[arg(long, default_value = "4")]
     pub timelines: usize,
 
-    /// Events per second per timeline (0 = unlimited)
     #[arg(long, default_value = "100")]
     pub rate: u64,
 
-    /// Replication factor
     #[arg(long, default_value = "3")]
     pub replication_factor: usize,
 
-    /// Payload size in bytes
     #[arg(long, default_value = "256")]
     pub payload_size: usize,
 
-    /// Report interval in seconds
     #[arg(long, default_value = "5")]
     pub report_interval: u64,
 
-    /// Duration in seconds (0 = run until Ctrl+C)
     #[arg(long, default_value = "0")]
     pub duration: u64,
 }
 
-/// Per-timeline verification state tracking TLA+ invariants.
 struct TimelineVerifier {
     name: String,
-    /// Written: offset → payload bytes (for exact content verification).
     written_payloads: BTreeMap<i64, Vec<u8>>,
-    /// All offsets that were acknowledged by the write path.
     acked_offsets: BTreeSet<i64>,
-    /// All offsets seen during reads (in order).
     read_offsets: BTreeSet<i64>,
-    /// Last offset read — for monotonic order check.
     last_read_offset: i64,
-    /// Violations detected.
     violations: Vec<String>,
 }
 
@@ -81,7 +65,6 @@ impl TimelineVerifier {
     }
 
     fn record_read(&mut self, offset: i64, payload: &[u8], payload_size: usize) {
-        // Invariant: monotonic ordering — each read offset must be > previous.
         if offset <= self.last_read_offset {
             self.violations.push(format!(
                 "[{}] ORDER: offset {} read after {} (not monotonically increasing)",
@@ -90,7 +73,6 @@ impl TimelineVerifier {
         }
         self.last_read_offset = offset;
 
-        // Invariant: no duplicates.
         if self.read_offsets.contains(&offset) {
             self.violations.push(format!(
                 "[{}] DUPLICATE: offset {} read more than once",
@@ -99,7 +81,6 @@ impl TimelineVerifier {
         }
         self.read_offsets.insert(offset);
 
-        // Invariant: payload integrity (structural check).
         if payload.len() >= 8 {
             let seq = u64::from_be_bytes(payload[..8].try_into().unwrap());
             let expected_fill = (seq % 256) as u8;
@@ -121,7 +102,6 @@ impl TimelineVerifier {
             ));
         }
 
-        // Invariant: exact payload match — read payload must equal written payload.
         if let Some(written) = self.written_payloads.get(&offset) {
             if payload != written.as_slice() {
                 self.violations.push(format!(
@@ -141,9 +121,7 @@ impl TimelineVerifier {
         }
     }
 
-    /// Verify TLA+ invariants after test completes.
     fn verify_final(&mut self) {
-        // Invariant: monotonic & no gaps — all acked offsets from 1..max are present.
         if let (Some(&min), Some(&max)) = (self.acked_offsets.first(), self.acked_offsets.last()) {
             for expected in min..=max {
                 if !self.acked_offsets.contains(&expected) {
@@ -155,7 +133,6 @@ impl TimelineVerifier {
             }
         }
 
-        // Invariant: durability — every acked offset must be readable.
         for &offset in &self.acked_offsets {
             if !self.read_offsets.contains(&offset) {
                 self.violations.push(format!(
@@ -165,7 +142,6 @@ impl TimelineVerifier {
             }
         }
 
-        // Invariant: no phantom reads — every read offset should be acked.
         for &offset in &self.read_offsets {
             if !self.acked_offsets.contains(&offset) {
                 self.violations.push(format!(
@@ -205,7 +181,6 @@ pub async fn run(args: VerifyArgs) -> Result<(), Box<dyn std::error::Error>> {
     };
     let catalog = catalog::build_catalog(&catalog_opts).await?;
 
-    // List units to verify connectivity (non-fatal — liboxia range_scan may be broken).
     match catalog.list_units().await {
         Ok(units) => {
             info!(count = units.len(), "units found in catalog");
@@ -216,7 +191,6 @@ pub async fn run(args: VerifyArgs) -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => warn!(error = %e, "failed to list units from catalog (non-fatal)"),
     }
 
-    // Also list timelines for debugging (non-fatal).
     match catalog.list_timelines().await {
         Ok(timelines) => info!(count = timelines.len(), "timelines found in catalog"),
         Err(e) => warn!(error = %e, "failed to list timelines from catalog (non-fatal)"),
@@ -225,16 +199,15 @@ pub async fn run(args: VerifyArgs) -> Result<(), Box<dyn std::error::Error>> {
     let chronicle = Arc::new(
         Chronicle::new(
             catalog,
-            ChronicleConfig {
-                replication_factor: args.replication_factor,
-                meter: None,
-                refresh_interval: Some(Duration::from_secs(10)),
-                unit_addresses: args
-                    .units
-                    .as_deref()
-                    .map(|s| s.split(',').map(|a| a.trim().to_string()).collect())
-                    .unwrap_or_default(),
-            },
+            ChronicleOptions::new()
+                .replication_factor(args.replication_factor)
+                .refresh_interval(Duration::from_secs(10))
+                .unit_addresses(
+                    args.units
+                        .as_deref()
+                        .map(|s| s.split(',').map(|a| a.trim().to_string()).collect())
+                        .unwrap_or_default(),
+                ),
         )
         .await?,
     );
@@ -251,14 +224,12 @@ pub async fn run(args: VerifyArgs) -> Result<(), Box<dyn std::error::Error>> {
     let reading = Arc::new(AtomicBool::new(true));
     let stats = Arc::new(Stats::new());
 
-    // Per-timeline verifiers (shared between writer and reader).
     let verifiers: Vec<Arc<Mutex<TimelineVerifier>>> = (0..args.timelines)
         .map(|i| Arc::new(Mutex::new(TimelineVerifier::new(&format!("verify-{}", i)))))
         .collect();
 
     let mut handles = Vec::new();
 
-    // Create all timelines sequentially to avoid liboxia batching races.
     let mut timelines = Vec::new();
     for i in 0..args.timelines {
         let name = format!("verify-{}", i);
@@ -278,7 +249,6 @@ pub async fn run(args: VerifyArgs) -> Result<(), Box<dyn std::error::Error>> {
         timelines.push((i, timeline));
     }
 
-    // Spawn writer tasks.
     for (i, timeline) in timelines {
         let stats = stats.clone();
         let running = running.clone();
@@ -302,9 +272,9 @@ pub async fn run(args: VerifyArgs) -> Result<(), Box<dyn std::error::Error>> {
                 payload.extend_from_slice(&seq.to_be_bytes());
                 payload.resize(payload_size, (seq % 256) as u8);
 
-                match timeline.record(0, payload.clone()).await {
-                    Ok(offset) => {
-                        verifier.lock().await.record_ack(offset.offset, payload);
+                match timeline.record(Event::new(payload.clone())).await {
+                    Ok(result) => {
+                        verifier.lock().await.record_ack(result.offset, payload);
                         stats.written.fetch_add(1, Ordering::Relaxed);
                         seq += 1;
                     }
@@ -320,17 +290,14 @@ pub async fn run(args: VerifyArgs) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            // Keep timeline alive for acks to flush.
             tokio::time::sleep(Duration::from_secs(3)).await;
             drop(timeline);
             info!(timeline = name, events = seq, "writer stopped");
         }));
     }
 
-    // Wait for writes to accumulate.
     tokio::time::sleep(Duration::from_secs(3)).await;
 
-    // Spawn reader/verifier tasks.
     for i in 0..args.timelines {
         let chronicle = chronicle.clone();
         let stats = stats.clone();
@@ -356,12 +323,12 @@ pub async fn run(args: VerifyArgs) -> Result<(), Box<dyn std::error::Error>> {
 
             while reading.load(Ordering::Relaxed) {
                 match cursor.fetch().await {
-                    Ok(Some((_offset, payload))) => {
+                    Ok(Some(event)) => {
                         stats.read.fetch_add(1, Ordering::Relaxed);
                         verifier
                             .lock()
                             .await
-                            .record_read(_offset.offset, &payload, payload_size);
+                            .record_read(event.offset, &event.payload, payload_size);
                         stats.verified.fetch_add(1, Ordering::Relaxed);
                     }
                     Ok(None) => {
@@ -381,7 +348,6 @@ pub async fn run(args: VerifyArgs) -> Result<(), Box<dyn std::error::Error>> {
         }));
     }
 
-    // Stats reporter.
     let stats_clone = stats.clone();
     let running_clone = running.clone();
     let report_interval = args.report_interval;
@@ -421,7 +387,6 @@ pub async fn run(args: VerifyArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Wait for Ctrl+C or duration timeout.
     if args.duration > 0 {
         let duration = Duration::from_secs(args.duration);
         tokio::select! {
@@ -436,14 +401,12 @@ pub async fn run(args: VerifyArgs) -> Result<(), Box<dyn std::error::Error>> {
     info!("shutting down — stopping writers...");
     running.store(false, Ordering::Relaxed);
 
-    // Let writers finish and readers drain remaining events.
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     info!("stopping readers — running final TLA+ invariant checks...");
     reading.store(false, Ordering::Relaxed);
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Run final verification.
     let mut total_violations = 0usize;
     for v in &verifiers {
         let mut verifier = v.lock().await;

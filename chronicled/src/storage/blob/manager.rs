@@ -35,7 +35,6 @@ pub struct SegmentMeta {
     pub size: u64,
     pub entry_count: u64,
     pub location: SegmentLocation,
-    /// Epoch milliseconds when this segment was created.
     pub created_at: i64,
 }
 
@@ -84,7 +83,6 @@ impl SegmentMeta {
     }
 }
 
-/// Cached remote segment file on local disk.
 struct CachedRemoteSegment {
     reader: BlobReader,
     cached_path: PathBuf,
@@ -101,8 +99,6 @@ pub struct SegmentManager {
     remote_store: Option<Arc<dyn RemoteStore>>,
 }
 
-/// Parse a segment filename like `L0_000001.cseg` into (level, id).
-/// Also supports legacy `segment_000001.cseg` format (treated as level 0).
 fn parse_segment_filename(name: &str) -> Option<(u32, u64)> {
     if let Some(rest) = name.strip_suffix(".cseg") {
         if let Some(rest) = rest.strip_prefix("L") {
@@ -113,7 +109,6 @@ fn parse_segment_filename(name: &str) -> Option<(u32, u64)> {
                 return Some((level, id));
             }
         }
-        // Legacy format: segment_000001.cseg
         if let Some(id_str) = rest.strip_prefix("segment_") {
             let id = id_str.parse::<u64>().ok()?;
             return Some((0, id));
@@ -162,7 +157,6 @@ impl SegmentManager {
 
         let mut max_id = 0u64;
 
-        // Scan local directory and upsert meta into RocksDB
         for entry in fs::read_dir(&segments_dir)
             .map_err(|e| UnitError::Storage(format!("failed to read segments dir: {}", e)))?
         {
@@ -192,7 +186,6 @@ impl SegmentManager {
             }
         }
 
-        // Also check existing RocksDB meta for remote segments with higher IDs
         for (id, _) in index.all_segment_meta_raw() {
             max_id = max_id.max(id + 1);
         }
@@ -289,14 +282,11 @@ impl SegmentManager {
         }
     }
 
-    /// Mark a segment as offloaded to remote storage.
-    /// Removes the local file and reader, but keeps meta with Remote location.
     pub fn mark_remote(&self, id: u64, key: String) {
         let mut readers = self.readers.write().unwrap();
         readers.remove(&id);
 
         if let Some(mut meta) = self.segment_meta(id) {
-            // Delete local file
             if let SegmentLocation::Local { ref path } = meta.location {
                 let _ = fs::remove_file(path);
             }
@@ -306,7 +296,6 @@ impl SegmentManager {
         }
     }
 
-    /// Remove segment files that are not referenced in the given set of known IDs.
     pub fn cleanup_orphans(&self, referenced_ids: &std::collections::HashSet<u64>) {
         let all_meta: Vec<u64> = self.index.all_segment_meta_raw()
             .into_iter()
@@ -337,7 +326,6 @@ impl SegmentManager {
     }
 
     pub fn read_event(&self, entry: &IndexEntry) -> Result<Event, UnitError> {
-        // Try local reader cache first
         {
             let readers = self.readers.read().unwrap();
             if let Some(reader) = readers.get(&entry.segment_id) {
@@ -345,7 +333,6 @@ impl SegmentManager {
             }
         }
 
-        // Check meta for location
         let meta = self.segment_meta(entry.segment_id);
 
         match meta.as_ref().map(|m| &m.location) {
@@ -357,7 +344,6 @@ impl SegmentManager {
                 Ok(event)
             }
             Some(SegmentLocation::Remote { .. }) => {
-                // Try LRU cache for downloaded remote segments
                 let mut cache = self.remote_cache.lock().unwrap();
                 if let Some(cached) = cache.get(&entry.segment_id) {
                     return cached.reader.read_event(entry.byte_offset, entry.length);
@@ -369,7 +355,6 @@ impl SegmentManager {
                 )))
             }
             None => {
-                // No meta — try legacy local path
                 let path = self.find_local_path(entry.segment_id)?;
                 let reader = BlobReader::open(&path)?;
                 let event = reader.read_event(entry.byte_offset, entry.length)?;
@@ -379,17 +364,13 @@ impl SegmentManager {
         }
     }
 
-    /// Read an event, downloading from remote storage if needed.
-    /// Downloads the entire segment to a local cache file and opens it as a regular file.
     pub async fn read_event_async(&self, entry: &IndexEntry) -> Result<Event, UnitError> {
-        // Try sync path first (local readers + local files)
         match self.read_event(entry) {
             Ok(event) => return Ok(event),
             Err(UnitError::Storage(msg)) if msg.contains("is remote") => {}
             Err(e) => return Err(e),
         }
 
-        // Fetch from remote
         let meta = self.segment_meta(entry.segment_id)
             .ok_or_else(|| UnitError::Storage(format!(
                 "segment {} not found", entry.segment_id
@@ -406,7 +387,6 @@ impl SegmentManager {
             UnitError::Storage("no remote store configured".into())
         })?;
 
-        // Download whole segment to a local cache file
         let data = remote_store.download(&remote_key).await?;
         let cached_path = self.cache_dir.join(segment_filename(meta.level, meta.id));
         fs::write(&cached_path, &data)
@@ -415,7 +395,6 @@ impl SegmentManager {
         let reader = BlobReader::open(&cached_path)?;
         let event = reader.read_event(entry.byte_offset, entry.length)?;
 
-        // Cache in LRU, clean up evicted file
         let mut cache = self.remote_cache.lock().unwrap();
         let evicted = cache.push(entry.segment_id, CachedRemoteSegment {
             reader,
@@ -654,11 +633,9 @@ mod tests {
 
         mgr.mark_remote(seg_id, "chronicle/segments/L2_000000.cseg".into());
 
-        // No longer appears in local segments
         assert_eq!(mgr.segments_at_level(2).len(), 0);
         assert!(mgr.segment_path_for(seg_id).is_none());
 
-        // Meta still exists with Remote location
         let meta = mgr.segment_meta(seg_id).unwrap();
         assert!(matches!(meta.location, SegmentLocation::Remote { .. }));
     }
@@ -708,17 +685,14 @@ mod tests {
             dir.path().join("segments"),
             IoMode::Basic,
             None,
-            2, // tiny LRU: capacity 2
+            2,
             index,
         ).unwrap();
 
-        // Create fake cached segment files
         let mut paths = Vec::new();
         for i in 0..3u64 {
             let cached_path = mgr.cache_dir.join(format!("cached_{}.cseg", i));
             fs::write(&cached_path, &[0u8; 10]).unwrap();
-            // We can't open BlobReader on a dummy file for read_event,
-            // but we can verify LRU eviction deletes the file
             let reader = BlobReader::open(&cached_path).unwrap();
             paths.push(cached_path.clone());
 
@@ -733,17 +707,13 @@ mod tests {
         }
 
         let cache = mgr.remote_cache.lock().unwrap();
-        // Only 2 entries should remain (LRU capacity)
         assert_eq!(cache.len(), 2);
-        // Entry 0 should have been evicted
         assert!(!cache.contains(&0));
         assert!(cache.contains(&1));
         assert!(cache.contains(&2));
         drop(cache);
 
-        // Evicted file should be deleted
         assert!(!paths[0].exists());
-        // Remaining files should exist
         assert!(paths[1].exists());
         assert!(paths[2].exists());
     }
@@ -753,7 +723,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let index = test_index(dir.path());
 
-        // Store some meta
         let meta = SegmentMeta {
             id: 1,
             level: 2,
@@ -774,7 +743,6 @@ mod tests {
         };
         index.put_segment_meta_raw(2, &remote_meta.encode()).unwrap();
 
-        // Verify retrieval
         let retrieved = index.get_segment_meta_raw(1).unwrap();
         let decoded = SegmentMeta::decode(&retrieved).unwrap();
         assert_eq!(decoded.level, 2);
@@ -783,7 +751,6 @@ mod tests {
         let all = index.all_segment_meta_raw();
         assert_eq!(all.len(), 2);
 
-        // Delete one
         index.delete_segment_meta(1).unwrap();
         assert!(index.get_segment_meta_raw(1).is_none());
         assert_eq!(index.all_segment_meta_raw().len(), 1);

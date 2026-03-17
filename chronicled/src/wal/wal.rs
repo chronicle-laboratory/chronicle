@@ -26,20 +26,17 @@ use tracing::{info, warn};
 
 const BATCH_FLUSH_INTERVAL_MS: u64 = 1;
 const MAX_BATCH_SIZE: usize = 512;
-const DEFAULT_MAX_SEGMENT_SIZE: u64 = 64 * 1024 * 1024; // 64MB per WAL segment
+const DEFAULT_MAX_SEGMENT_SIZE: u64 = 64 * 1024 * 1024;
 
-/// Format a WAL segment filename: `{segment_id:08}.log`
 fn segment_filename(segment_id: u64) -> String {
     format!("{:08}.log", segment_id)
 }
 
-/// Parse a segment ID from a WAL filename.
 fn parse_segment_id(filename: &str) -> Option<u64> {
     let stem = filename.strip_suffix(".log")?;
     stem.parse::<u64>().ok()
 }
 
-/// Open a segment file at the given path with the specified IO mode.
 async fn open_segment(path: PathBuf, io_mode: IoMode) -> Result<Box<dyn Segment>, UnitError> {
     match io_mode {
         IoMode::Advanced => {
@@ -63,7 +60,6 @@ async fn open_segment(path: PathBuf, io_mode: IoMode) -> Result<Box<dyn Segment>
     }
 }
 
-/// Discover all WAL segment files in a directory, sorted by segment ID.
 fn discover_segments(dir: &Path) -> Vec<(u64, PathBuf)> {
     let mut segments = Vec::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
@@ -89,9 +85,7 @@ struct WalState {
 }
 
 impl WalState {
-    /// Rotate to a new segment. Returns the new segment ID.
     async fn rotate(&mut self) -> Result<u64, UnitError> {
-        // Sync current segment before rotating.
         if let Err(e) = self.current_segment.sync().await {
             warn!(error = ?e, "failed to sync segment before rotation");
         }
@@ -105,12 +99,10 @@ impl WalState {
         Ok(new_id)
     }
 
-    /// Check if rotation is needed based on current segment size.
     fn needs_rotation(&self, additional_bytes: usize) -> bool {
         self.current_segment.offset() + additional_bytes as u64 > self.max_segment_size
     }
 
-    /// Compute a globally monotonic offset from segment_id + local offset.
     fn global_offset(&self, local_offset: u64) -> i64 {
         ((self.current_segment_id as i64) << 32) | (local_offset as i64 & 0xFFFF_FFFF)
     }
@@ -164,14 +156,11 @@ impl Wal {
 
         let max_segment_size = options.max_segment_size.unwrap_or(DEFAULT_MAX_SEGMENT_SIZE);
 
-        // Discover existing segments or create the first one.
         let existing = discover_segments(&dir);
         let (current_segment_id, segment) = if let Some((last_id, last_path)) = existing.last() {
-            // Re-open the last (most recent) segment for appending.
             let seg = open_segment(last_path.clone(), options.io_mode).await?;
             (*last_id, seg)
         } else {
-            // Fresh start — create segment 0.
             let path = dir.join(segment_filename(0));
             let seg = open_segment(path, options.io_mode).await?;
             (0, seg)
@@ -235,15 +224,12 @@ impl Wal {
         self.inner.synced_offset.clone()
     }
 
-    /// Read all WAL segments in order, yielding records from each.
-    /// Optionally starts from a given segment ID (for replay after checkpoint).
     pub async fn read_stream(
         &self,
     ) -> Pin<Box<dyn Stream<Item = Result<Vec<u8>, UnitError>> + Send + '_>> {
         self.read_stream_from(0).await
     }
 
-    /// Read WAL records starting from a given segment ID.
     pub async fn read_stream_from(
         &self,
         from_segment_id: u64,
@@ -251,7 +237,6 @@ impl Wal {
         let segments = discover_segments(&self.dir);
         let io_mode = self.io_mode;
 
-        // Collect segment paths that are >= from_segment_id.
         let replay_segments: Vec<(u64, PathBuf)> = segments
             .into_iter()
             .filter(|(id, _)| *id >= from_segment_id)
@@ -300,8 +285,6 @@ impl Wal {
         })
     }
 
-    /// Trim WAL segments with IDs strictly less than the given segment ID.
-    /// Segments below this ID have been fully checkpointed and are safe to delete.
     pub async fn trim(&self, below_segment_id: u64) -> Result<u64, UnitError> {
         let segments = discover_segments(&self.dir);
         let mut trimmed = 0u64;
@@ -324,7 +307,6 @@ impl Wal {
         Ok(trimmed)
     }
 
-    /// Return the current active segment ID.
     pub async fn current_segment_id(&self) -> u64 {
         self.inner.state.lock().await.current_segment_id
     }
@@ -367,7 +349,6 @@ async fn bg_wal_writer(
                 pending_batch.add(record);
                 pending_senders.push(offset_tx);
 
-                // Greedily drain all immediately available records before flushing.
                 while pending_batch.len() < MAX_BATCH_SIZE {
                     match buf_rx.try_recv() {
                         Ok((data, tx)) => {
@@ -418,7 +399,6 @@ async fn flush_batch(
 
     let mut state = inner.state.lock().await;
 
-    // Check if we need to rotate before writing.
     if state.needs_rotation(encoded.len()) {
         if let Err(e) = state.rotate().await {
             warn!(error = ?e, "failed to rotate wal segment");
