@@ -44,7 +44,7 @@ pub struct Unit {
     compaction_pipeline: CompactionPipeline,
     retention_manager: Option<RetentionManager>,
     wal: Wal,
-    catalog: Arc<dyn Catalog>,
+    catalog: Arc<Catalog>,
     address: String,
     _meter_provider: opentelemetry_sdk::metrics::SdkMeterProvider,
     _observable_gauges: Vec<opentelemetry::metrics::ObservableGauge<u64>>,
@@ -53,7 +53,7 @@ pub struct Unit {
 impl Unit {
     pub async fn new(
         options: UnitOptions,
-        catalog: Arc<dyn Catalog>,
+        catalog: Arc<Catalog>,
     ) -> Result<Self, UnitError> {
         info!("unit initializing");
         let context = CancellationToken::new();
@@ -338,7 +338,7 @@ fn bg_health_monitor(
     context: CancellationToken,
     state: Arc<AtomicU8>,
     data_dir: String,
-    catalog: Arc<dyn Catalog>,
+    catalog: Arc<Catalog>,
     address: String,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -360,7 +360,7 @@ fn bg_health_monitor(
 async fn check_disk_health(
     state: &AtomicU8,
     data_dir: &str,
-    catalog: &Arc<dyn Catalog>,
+    catalog: &Arc<Catalog>,
     address: &str,
 ) {
     let c_path = match std::ffi::CString::new(data_dir) {

@@ -179,7 +179,7 @@ pub async fn run(args: VerifyArgs) -> Result<(), Box<dyn std::error::Error>> {
         service_address: Some(args.catalog.clone()),
         ..Default::default()
     };
-    let catalog = catalog::build_catalog(&catalog_opts).await?;
+    let catalog = Arc::new(catalog::build_catalog(&catalog_opts).await?);
 
     match catalog.list_units().await {
         Ok(units) => {
@@ -200,16 +200,8 @@ pub async fn run(args: VerifyArgs) -> Result<(), Box<dyn std::error::Error>> {
         Chronicle::new(
             catalog,
             ChronicleOptions::new()
-                .replication_factor(args.replication_factor)
-                .refresh_interval(Duration::from_secs(10))
-                .unit_addresses(
-                    args.units
-                        .as_deref()
-                        .map(|s| s.split(',').map(|a| a.trim().to_string()).collect())
-                        .unwrap_or_default(),
-                ),
-        )
-        .await?,
+                .replication_factor(args.replication_factor),
+        ),
     );
 
     info!(

@@ -1,11 +1,9 @@
-use async_trait::async_trait;
 use chronicle_proto::pb_catalog::{TimelineCatalog, UnitRegistration};
 use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
 
-use crate::Catalog;
 use crate::error::CatalogError;
 
 pub struct MemoryCatalog {
@@ -36,10 +34,8 @@ impl Default for MemoryCatalog {
     }
 }
 
-#[async_trait]
-impl Catalog for MemoryCatalog {
-
-    async fn get_timeline(&self, name: &str) -> Result<TimelineCatalog, CatalogError> {
+impl MemoryCatalog {
+    pub async fn get_timeline(&self, name: &str) -> Result<TimelineCatalog, CatalogError> {
         self.timelines
             .lock()
             .unwrap()
@@ -48,7 +44,7 @@ impl Catalog for MemoryCatalog {
             .ok_or_else(|| CatalogError::NotFound(name.to_string()))
     }
 
-    async fn put_timeline(
+    pub async fn put_timeline(
         &self,
         catalog: &TimelineCatalog,
         expected_version: i64,
@@ -69,7 +65,7 @@ impl Catalog for MemoryCatalog {
         Ok(updated)
     }
 
-    async fn create_timeline(&self, name: &str) -> Result<TimelineCatalog, CatalogError> {
+    pub async fn create_timeline(&self, name: &str) -> Result<TimelineCatalog, CatalogError> {
         let mut store = self.timelines.lock().unwrap();
         if store.contains_key(name) {
             return Err(CatalogError::AlreadyExists(name.to_string()));
@@ -84,7 +80,7 @@ impl Catalog for MemoryCatalog {
         Ok(tc)
     }
 
-    async fn delete_timeline(&self, name: &str) -> Result<(), CatalogError> {
+    pub async fn delete_timeline(&self, name: &str) -> Result<(), CatalogError> {
         self.timelines
             .lock()
             .unwrap()
@@ -93,11 +89,11 @@ impl Catalog for MemoryCatalog {
             .ok_or_else(|| CatalogError::NotFound(name.to_string()))
     }
 
-    async fn list_timelines(&self) -> Result<Vec<TimelineCatalog>, CatalogError> {
+    pub async fn list_timelines(&self) -> Result<Vec<TimelineCatalog>, CatalogError> {
         Ok(self.timelines.lock().unwrap().values().cloned().collect())
     }
 
-    async fn register_unit(
+    pub async fn register_unit(
         &self,
         registration: &UnitRegistration,
     ) -> Result<(), CatalogError> {
@@ -106,14 +102,14 @@ impl Catalog for MemoryCatalog {
         Ok(())
     }
 
-    async fn unregister_unit(&self, address: &str) -> Result<(), CatalogError> {
+    pub async fn unregister_unit(&self, address: &str) -> Result<(), CatalogError> {
         self.units
             .remove(address)
             .map(|_| ())
             .ok_or_else(|| CatalogError::NotFound(address.to_string()))
     }
 
-    async fn list_units(&self) -> Result<Vec<UnitRegistration>, CatalogError> {
+    pub async fn list_units(&self) -> Result<Vec<UnitRegistration>, CatalogError> {
         Ok(self.units.iter().map(|r| r.value().clone()).collect())
     }
 }

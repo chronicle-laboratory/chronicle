@@ -6,7 +6,6 @@ resolver = "3"
 
 [dependencies]
 chronicle-proto = { workspace = true }
-async-trait = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }

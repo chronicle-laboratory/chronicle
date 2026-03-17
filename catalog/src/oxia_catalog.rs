@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use chronicle_proto::pb_catalog::{TimelineCatalog, UnitRegistration, UnitRegistry};
 use liboxia::client::{GetOption, OxiaClient, PutOption};
 use liboxia::client_builder::OxiaClientBuilder;
@@ -7,7 +6,6 @@ use prost::Message;
 use std::sync::atomic::{AtomicI64, Ordering};
 use tracing::{debug, info, warn};
 
-use crate::Catalog;
 use crate::error::CatalogError;
 
 fn hex_preview(data: &[u8]) -> String {
@@ -65,7 +63,7 @@ impl OxiaCatalog {
             .map_err(|e| CatalogError::Internal(e.to_string()))
     }
 
-    async fn read_unit_registry(&self) -> Result<(UnitRegistry, i64), CatalogError> {
+    pub async fn read_unit_registry(&self) -> Result<(UnitRegistry, i64), CatalogError> {
         match self.client.get_with_options(UNITS_KEY.to_string(), vec![GetOption::IncludeValue()]).await {
             Ok(result) => {
                 let value = result.value.unwrap_or_default();
@@ -86,7 +84,7 @@ impl OxiaCatalog {
         }
     }
 
-    async fn write_unit_registry(&self, registry: &UnitRegistry, expected_version: i64) -> Result<(), CatalogError> {
+    pub async fn write_unit_registry(&self, registry: &UnitRegistry, expected_version: i64) -> Result<(), CatalogError> {
         let value = registry.encode_to_vec();
         self.client
             .put_with_options(
@@ -106,9 +104,8 @@ impl OxiaCatalog {
     }
 }
 
-#[async_trait]
-impl Catalog for OxiaCatalog {
-    async fn get_timeline(&self, name: &str) -> Result<TimelineCatalog, CatalogError> {
+impl OxiaCatalog {
+    pub async fn get_timeline(&self, name: &str) -> Result<TimelineCatalog, CatalogError> {
         let key = Self::timeline_key(name);
         debug!("get_timeline: key={}", key);
 
@@ -127,7 +124,7 @@ impl Catalog for OxiaCatalog {
         Self::decode_timeline(&value, result.version.version_id)
     }
 
-    async fn put_timeline(
+    pub async fn put_timeline(
         &self,
         catalog: &TimelineCatalog,
         expected_version: i64,
@@ -160,7 +157,7 @@ impl Catalog for OxiaCatalog {
         Ok(updated)
     }
 
-    async fn create_timeline(&self, name: &str) -> Result<TimelineCatalog, CatalogError> {
+    pub async fn create_timeline(&self, name: &str) -> Result<TimelineCatalog, CatalogError> {
         let timeline_id = self.next_timeline_id.fetch_add(1, Ordering::SeqCst);
         let catalog = TimelineCatalog {
             name: name.to_string(),
@@ -187,7 +184,7 @@ impl Catalog for OxiaCatalog {
         Ok(created)
     }
 
-    async fn delete_timeline(&self, name: &str) -> Result<(), CatalogError> {
+    pub async fn delete_timeline(&self, name: &str) -> Result<(), CatalogError> {
         let key = Self::timeline_key(name);
         debug!("delete_timeline: key={}", key);
 
@@ -198,7 +195,7 @@ impl Catalog for OxiaCatalog {
         Ok(())
     }
 
-    async fn list_timelines(&self) -> Result<Vec<TimelineCatalog>, CatalogError> {
+    pub async fn list_timelines(&self) -> Result<Vec<TimelineCatalog>, CatalogError> {
         let min_key = KEY_PREFIX.to_string();
         let max_key = format!("{}\x7f", KEY_PREFIX);
         debug!("list_timelines: range=[{}, {})", min_key, max_key);
@@ -219,7 +216,7 @@ impl Catalog for OxiaCatalog {
         Ok(timelines)
     }
 
-    async fn register_unit(
+    pub async fn register_unit(
         &self,
         registration: &UnitRegistration,
     ) -> Result<(), CatalogError> {
@@ -270,7 +267,7 @@ impl Catalog for OxiaCatalog {
         Err(CatalogError::Internal("register_unit: too many CAS retries".into()))
     }
 
-    async fn unregister_unit(&self, address: &str) -> Result<(), CatalogError> {
+    pub async fn unregister_unit(&self, address: &str) -> Result<(), CatalogError> {
         debug!("unregister_unit: address={}", address);
 
         for _ in 0..10 {
@@ -294,7 +291,7 @@ impl Catalog for OxiaCatalog {
         Err(CatalogError::Internal("unregister_unit: too many CAS retries".into()))
     }
 
-    async fn list_units(&self) -> Result<Vec<UnitRegistration>, CatalogError> {
+    pub async fn list_units(&self) -> Result<Vec<UnitRegistration>, CatalogError> {
         debug!("list_units");
         let (registry, _version) = self.read_unit_registry().await?;
         Ok(registry.units)

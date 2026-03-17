@@ -2,31 +2,81 @@ pub mod error;
 pub mod memory_catalog;
 pub mod oxia_catalog;
 
-use async_trait::async_trait;
 use chronicle_proto::pb_catalog::{TimelineCatalog, UnitRegistration};
 use error::CatalogError;
+use memory_catalog::MemoryCatalog;
+use oxia_catalog::OxiaCatalog;
 use serde::Deserialize;
-use std::sync::Arc;
 use tracing::info;
 
-#[async_trait]
-pub trait Catalog: Send + Sync {
-    async fn get_timeline(&self, name: &str) -> Result<TimelineCatalog, CatalogError>;
-    async fn put_timeline(
+pub enum Catalog {
+    Memory(MemoryCatalog),
+    Oxia(OxiaCatalog),
+}
+
+impl Catalog {
+    pub async fn get_timeline(&self, name: &str) -> Result<TimelineCatalog, CatalogError> {
+        match self {
+            Catalog::Memory(c) => c.get_timeline(name).await,
+            Catalog::Oxia(c) => c.get_timeline(name).await,
+        }
+    }
+
+    pub async fn put_timeline(
         &self,
         catalog: &TimelineCatalog,
         expected_version: i64,
-    ) -> Result<TimelineCatalog, CatalogError>;
-    async fn create_timeline(&self, name: &str) -> Result<TimelineCatalog, CatalogError>;
-    async fn delete_timeline(&self, name: &str) -> Result<(), CatalogError>;
-    async fn list_timelines(&self) -> Result<Vec<TimelineCatalog>, CatalogError>;
+    ) -> Result<TimelineCatalog, CatalogError> {
+        match self {
+            Catalog::Memory(c) => c.put_timeline(catalog, expected_version).await,
+            Catalog::Oxia(c) => c.put_timeline(catalog, expected_version).await,
+        }
+    }
 
-    async fn register_unit(
+    pub async fn create_timeline(&self, name: &str) -> Result<TimelineCatalog, CatalogError> {
+        match self {
+            Catalog::Memory(c) => c.create_timeline(name).await,
+            Catalog::Oxia(c) => c.create_timeline(name).await,
+        }
+    }
+
+    pub async fn delete_timeline(&self, name: &str) -> Result<(), CatalogError> {
+        match self {
+            Catalog::Memory(c) => c.delete_timeline(name).await,
+            Catalog::Oxia(c) => c.delete_timeline(name).await,
+        }
+    }
+
+    pub async fn list_timelines(&self) -> Result<Vec<TimelineCatalog>, CatalogError> {
+        match self {
+            Catalog::Memory(c) => c.list_timelines().await,
+            Catalog::Oxia(c) => c.list_timelines().await,
+        }
+    }
+
+    pub async fn register_unit(
         &self,
         registration: &UnitRegistration,
-    ) -> Result<(), CatalogError>;
-    async fn unregister_unit(&self, address: &str) -> Result<(), CatalogError>;
-    async fn list_units(&self) -> Result<Vec<UnitRegistration>, CatalogError>;
+    ) -> Result<(), CatalogError> {
+        match self {
+            Catalog::Memory(c) => c.register_unit(registration).await,
+            Catalog::Oxia(c) => c.register_unit(registration).await,
+        }
+    }
+
+    pub async fn unregister_unit(&self, address: &str) -> Result<(), CatalogError> {
+        match self {
+            Catalog::Memory(c) => c.unregister_unit(address).await,
+            Catalog::Oxia(c) => c.unregister_unit(address).await,
+        }
+    }
+
+    pub async fn list_units(&self) -> Result<Vec<UnitRegistration>, CatalogError> {
+        match self {
+            Catalog::Memory(c) => c.list_units().await,
+            Catalog::Oxia(c) => c.list_units().await,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -59,11 +109,11 @@ fn default_catalog_namespace() -> String {
 
 pub async fn build_catalog(
     options: &CatalogOptions,
-) -> Result<Arc<dyn Catalog>, CatalogError> {
+) -> Result<Catalog, CatalogError> {
     match options.backend.as_str() {
         "memory" => {
             info!("using memory catalog");
-            Ok(Arc::new(memory_catalog::MemoryCatalog::new()))
+            Ok(Catalog::Memory(MemoryCatalog::new()))
         }
         "oxia" => {
             let address = options
@@ -76,9 +126,8 @@ pub async fn build_catalog(
                 })?;
             info!(address, namespace = %options.namespace, "connecting to oxia catalog");
             let catalog =
-                oxia_catalog::OxiaCatalog::new(address.to_string(), options.namespace.clone())
-                    .await?;
-            Ok(Arc::new(catalog))
+                OxiaCatalog::new(address.to_string(), options.namespace.clone()).await?;
+            Ok(Catalog::Oxia(catalog))
         }
         other => Err(CatalogError::Internal(format!(
             "unknown catalog backend: {}",

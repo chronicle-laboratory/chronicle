@@ -4,6 +4,7 @@ use chronicle_unit::option::unit_options::UnitOptions;
 use chronicle_unit::unit::unit::Unit;
 use tracing::{info, warn};
 use std::io::IsTerminal;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
@@ -76,7 +77,7 @@ pub async fn run(action: UnitAction) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             };
-            let unit = Unit::new(options, catalog).await?;
+            let unit = Unit::new(options, Arc::new(catalog)).await?;
 
             process::wait_for_shutdown().await;
 

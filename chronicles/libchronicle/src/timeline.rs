@@ -1,4 +1,4 @@
-use crate::conn::UnitClient;
+use crate::conn::Conn;
 use crate::error::ChronicleError;
 use crate::{Event as UserEvent, Offset, Writer};
 use catalog::Catalog;
@@ -8,7 +8,7 @@ use chronicle_proto::pb_ext::{
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -23,8 +23,8 @@ pub(crate) struct ReconciledState {
 }
 
 pub(crate) async fn reconcile(
-    catalog: &dyn Catalog,
-    unit_clients: &HashMap<String, UnitClient>,
+    catalog: &Catalog,
+    unit_clients: &HashMap<String, Conn>,
     timeline_name: &str,
 ) -> Result<ReconciledState, ChronicleError> {
     let mut tc = catalog.get_timeline(timeline_name).await?;
@@ -54,7 +54,7 @@ pub(crate) async fn reconcile(
         let mut attempts: u64 = 0;
         let response = loop {
             attempts += 1;
-            match client.fence(tc.timeline_id, new_term).await {
+            match client.new_term(tc.timeline_id, new_term).await {
                 Ok(resp) => break resp,
                 Err(e) if attempts < 5 => {
                     warn!(
@@ -170,8 +170,8 @@ impl Drop for Timeline {
 
 impl Timeline {
     pub async fn create(
-        catalog: &dyn Catalog,
-        unit_clients: &HashMap<String, UnitClient>,
+        catalog: &Catalog,
+        unit_clients: &HashMap<String, Conn>,
         name: &str,
         replication_factor: usize,
     ) -> Result<Self, ChronicleError> {
@@ -225,7 +225,7 @@ impl Timeline {
 
     pub(crate) async fn open(
         reconciled: ReconciledState,
-        unit_clients: &HashMap<String, UnitClient>,
+        unit_clients: &HashMap<String, Conn>,
         name: &str,
         timeline_id: i64,
         replication_factor: usize,
@@ -258,7 +258,7 @@ impl Timeline {
         catalog_version: i64,
         replication_factor: usize,
         needs_trunc: bool,
-        unit_clients: &HashMap<String, UnitClient>,
+        unit_clients: &HashMap<String, Conn>,
     ) -> Result<Self, ChronicleError> {
         let inner = Arc::new(Mutex::new(InnerState {
             timeline_id,
@@ -288,9 +288,8 @@ impl Timeline {
 
             let inner_clone = inner.clone();
             let ep = endpoint.clone();
-            let client_clone = client.clone();
             tasks.push(tokio::spawn(async move {
-                ack_collector(inner_clone, ep, client_clone, response_stream).await;
+                ack_collector(inner_clone, ep, response_stream).await;
             }));
         }
 
@@ -312,8 +311,8 @@ impl Timeline {
 
     pub async fn handle_ensemble_change(
         &self,
-        catalog: &dyn Catalog,
-        unit_clients: &HashMap<String, UnitClient>,
+        catalog: &Catalog,
+        unit_clients: &HashMap<String, Conn>,
         failed_units: &[String],
     ) -> Result<(), ChronicleError> {
         let available: Vec<String> = unit_clients.keys().cloned().collect();
@@ -368,9 +367,8 @@ impl Timeline {
                     }
                     let inner_clone = self.inner.clone();
                     let ep = endpoint.clone();
-                    let client_clone = client.clone();
-                    tokio::spawn(async move {
-                        ack_collector(inner_clone, ep, client_clone, response_stream).await;
+                            tokio::spawn(async move {
+                        ack_collector(inner_clone, ep, response_stream).await;
                     });
                 }
             }
@@ -471,83 +469,54 @@ fn select_ensemble(
 async fn ack_collector(
     inner: Arc<Mutex<InnerState>>,
     endpoint: String,
-    client: UnitClient,
-    initial_stream: tonic::Streaming<chronicle_proto::pb_ext::RecordEventsResponse>,
+    response_stream: tonic::Streaming<chronicle_proto::pb_ext::RecordEventsResponse>,
 ) {
-    let mut client = client;
-    let mut backoff = Duration::from_millis(100);
-    const MAX_BACKOFF: Duration = Duration::from_secs(10);
-    let mut response_stream = initial_stream;
+    let mut response_stream = response_stream;
 
-    loop {
-        while let Ok(Some(response)) = response_stream.message().await {
-            let mut state = inner.lock().unwrap();
+    while let Ok(Some(response)) = response_stream.message().await {
+        let mut state = inner.lock().unwrap();
 
-            for item in &response.items {
-                if item.code == StatusCode::Ok as i32 {
-                    if let Some(ref event) = item.event {
-                        state
-                            .acked
-                            .entry(event.offset)
-                            .or_default()
-                            .insert(endpoint.clone());
-                    }
-                } else {
-                    warn!(
-                        endpoint = %endpoint,
-                        code = item.code,
-                        "record response error from unit"
-                    );
+        for item in &response.items {
+            if item.code == StatusCode::Ok as i32 {
+                if let Some(ref event) = item.event {
+                    state
+                        .acked
+                        .entry(event.offset)
+                        .or_default()
+                        .insert(endpoint.clone());
                 }
-            }
-
-            let rf = state.replication_factor;
-            while state.lra < state.lrs {
-                let next = state.lra + 1;
-                let fully_acked = state
-                    .acked
-                    .get(&next)
-                    .is_some_and(|set| set.len() >= rf);
-                if fully_acked {
-                    state.lra = next;
-                } else {
-                    break;
-                }
-            }
-
-            let lra = state.lra;
-            state.acked.retain(|&offset, _| offset > lra);
-        }
-
-        {
-            let mut state = inner.lock().unwrap();
-            state.senders.remove(&endpoint);
-        }
-        warn!(endpoint = %endpoint, "record stream ended, reconnecting");
-
-        loop {
-            tokio::time::sleep(backoff).await;
-            backoff = (backoff * 2).min(MAX_BACKOFF);
-            if let Err(re) = client.reconnect().await {
-                warn!(endpoint = %endpoint, error = %re, "reconnect failed");
-                continue;
-            }
-            match client.open_record_stream(64).await {
-                Ok((tx, stream)) => {
-                    backoff = Duration::from_millis(100);
-                    {
-                        let mut state = inner.lock().unwrap();
-                        state.senders.insert(endpoint.clone(), tx);
-                    }
-                    response_stream = stream;
-                    break;
-                }
-                Err(e) => {
-                    warn!(endpoint = %endpoint, error = %e, "failed to reopen record stream");
-                }
+            } else {
+                warn!(
+                    endpoint = %endpoint,
+                    code = item.code,
+                    "record response error from unit"
+                );
             }
         }
+
+        let rf = state.replication_factor;
+        while state.lra < state.lrs {
+            let next = state.lra + 1;
+            let fully_acked = state
+                .acked
+                .get(&next)
+                .is_some_and(|set| set.len() >= rf);
+            if fully_acked {
+                state.lra = next;
+            } else {
+                break;
+            }
+        }
+
+        let lra = state.lra;
+        state.acked.retain(|&offset, _| offset > lra);
     }
+
+    {
+        let mut state = inner.lock().unwrap();
+        state.senders.remove(&endpoint);
+    }
+    warn!(endpoint = %endpoint, "record stream ended");
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-use crate::conn::UnitClient;
+use crate::conn::Conn;
 use crate::error::ChronicleError;
 use crate::{Cursor, FetchedEvent};
 use chronicle_proto::pb_catalog::Segment;
@@ -20,7 +20,7 @@ const MAX_POLL_INTERVAL: Duration = Duration::from_secs(5);
 pub struct TimelineCursor {
     timeline_id: i64,
     segments: Vec<Segment>,
-    unit_clients: HashMap<String, UnitClient>,
+    unit_clients: HashMap<String, Conn>,
     position: Arc<AtomicI64>,
     stream: Option<EventStream>,
     tail: bool,
@@ -32,7 +32,7 @@ impl TimelineCursor {
     pub fn new(
         timeline_id: i64,
         segments: Vec<Segment>,
-        unit_clients: &HashMap<String, UnitClient>,
+        unit_clients: &HashMap<String, Conn>,
     ) -> Self {
         let start = segments.first().map(|s| s.start_offset).unwrap_or(1);
         Self {
@@ -69,9 +69,9 @@ impl TimelineCursor {
     }
 
     fn pick_unit<'a>(
-        unit_clients: &'a HashMap<String, UnitClient>,
+        unit_clients: &'a HashMap<String, Conn>,
         segment: &Segment,
-    ) -> Result<&'a UnitClient, ChronicleError> {
+    ) -> Result<&'a Conn, ChronicleError> {
         for ep in &segment.ensemble {
             if let Some(client) = unit_clients.get(ep) {
                 return Ok(client);
@@ -85,7 +85,7 @@ impl TimelineCursor {
     async fn open_stream(
         timeline_id: i64,
         segments: &[Segment],
-        unit_clients: &HashMap<String, UnitClient>,
+        unit_clients: &HashMap<String, Conn>,
         position: &Arc<AtomicI64>,
     ) -> Result<EventStream, ChronicleError> {
         let start = position.load(Ordering::Relaxed);
