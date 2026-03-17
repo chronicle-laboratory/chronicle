@@ -1,0 +1,58 @@
+use futures_util::TryStreamExt;
+use libchronicle::chronicle::{Chronicle, ChronicleOptions};
+use libchronicle::{Event, FetchOptions, TimelineOptions, Writer};
+use std::sync::Arc;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let catalog = Arc::new(
+        catalog::build_catalog(&catalog::CatalogOptions::default()).await?,
+    );
+
+    let chronicle = Chronicle::new(catalog, ChronicleOptions::new());
+
+    let timeline = chronicle
+        .open_timeline("example-timeline", TimelineOptions::new().replication_factor(1))
+        .await?;
+
+    // Record events
+    let o1 = timeline.record(Event::new(b"hello".to_vec())).await?;
+    let o2 = timeline.record(Event::new(b"world".to_vec())).await?;
+    println!("recorded at offsets: {}, {}", o1.0, o2.0);
+
+    // Record with key and schema
+    let o3 = timeline
+        .record(
+            Event::new(b"keyed event".to_vec())
+                .with_key(b"user-123".to_vec())
+                .with_schema_id(1),
+        )
+        .await?;
+    println!("recorded keyed event at offset: {}", o3.0);
+
+    // Batch records with tokio::join!
+    let (r1, r2, r3) = tokio::join!(
+        timeline.record(Event::new(b"batch-1".to_vec())),
+        timeline.record(Event::new(b"batch-2".to_vec())),
+        timeline.record(Event::new(b"batch-3".to_vec())),
+    );
+    println!(
+        "batch offsets: {}, {}, {}",
+        r1?.0, r2?.0, r3?.0
+    );
+
+    // Fetch from beginning
+    let mut stream = timeline.fetch(FetchOptions::earliest().limit(6));
+    while let Some(event) = stream.try_next().await? {
+        println!(
+            "offset={} payload={}",
+            event.offset.unwrap_or(-1),
+            String::from_utf8_lossy(&event.payload)
+        );
+    }
+
+    // Close gracefully
+    timeline.close().await;
+
+    Ok(())
+}
