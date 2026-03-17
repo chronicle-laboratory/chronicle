@@ -1,4 +1,4 @@
-use crate::conn::Conn;
+use crate::conn::{Conn, ConnPool};
 use crate::error::ChronicleError;
 use crate::Offset;
 use catalog::Catalog;
@@ -42,36 +42,38 @@ impl Drop for StateMachine {
 impl StateMachine {
     pub async fn open(
         catalog: &Catalog,
-        conns: &HashMap<String, Conn>,
-        timeline_name: &str,
+        pool: &ConnPool,
         tc: &chronicle_proto::pb_catalog::TimelineCatalog,
         replication_factor: usize,
         schema_id: Option<String>,
     ) -> Result<Self, ChronicleError> {
+        let last_segment = tc.segments.last().ok_or_else(|| {
+            ChronicleError::ReconciliationFailed("timeline has no segments".into())
+        })?;
+        let ensemble = &last_segment.ensemble;
+
         let new_term = tc.term + 1;
         let mut tc_update = tc.clone();
         tc_update.term = new_term;
         let tc = catalog.put_timeline(&tc_update, tc.version).await?;
 
         info!(
-            timeline = timeline_name,
             timeline_id = tc.timeline_id,
             term = new_term,
-            "new term: starting"
+            "new term: fencing ensemble"
         );
 
-        let last_segment = tc.segments.last().ok_or_else(|| {
-            ChronicleError::ReconciliationFailed("timeline has no segments".into())
-        })?;
-        let ensemble = &last_segment.ensemble;
+        let mut conns: HashMap<String, Conn> = HashMap::new();
+        for endpoint in ensemble {
+            conns.insert(
+                endpoint.clone(),
+                pool.get_or_connect(endpoint)?,
+            );
+        }
 
         let mut max_lra: i64 = 0;
 
-        for endpoint in ensemble {
-            let conn = conns.get(endpoint).ok_or_else(|| {
-                ChronicleError::EnsembleUnavailable(format!("no conn for unit {}", endpoint))
-            })?;
-
+        for (endpoint, conn) in &conns {
             let mut attempts: u64 = 0;
             let response = loop {
                 attempts += 1;
@@ -140,7 +142,7 @@ impl StateMachine {
         catalog.put_timeline(&updated, tc.version).await?;
 
         info!(
-            timeline = timeline_name,
+            timeline_id = tc.timeline_id,
             term = new_term,
             lra = lra,
             "new term: complete"
@@ -162,11 +164,7 @@ impl StateMachine {
         let mut record_senders = HashMap::new();
         let mut ack_tasks = Vec::new();
 
-        for endpoint in &writable_segment.ensemble {
-            let conn = conns.get(endpoint).ok_or_else(|| {
-                ChronicleError::EnsembleUnavailable(format!("no conn for unit {}", endpoint))
-            })?;
-
+        for (endpoint, conn) in &conns {
             let (tx, response_stream) = conn.open_record_stream(64).await?;
             record_senders.insert(endpoint.clone(), tx);
 
@@ -190,14 +188,8 @@ impl StateMachine {
     }
 
     pub async fn close(&self) {
-        {
-            let mut s = self.inner.lock().unwrap();
-            s.senders.clear();
-        }
-        for task in &self.ack_tasks {
-            task.abort();
-            let _ = task;
-        }
+        let mut s = self.inner.lock().unwrap();
+        s.senders.clear();
     }
 
     pub fn lra(&self) -> i64 {

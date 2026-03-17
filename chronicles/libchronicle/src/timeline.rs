@@ -1,4 +1,4 @@
-use crate::conn::{Conn, ConnPool};
+use crate::conn::ConnPool;
 use crate::cursor::EventStream;
 use crate::ensemble;
 use crate::error::ChronicleError;
@@ -6,8 +6,7 @@ use crate::event_group::{self, PendingEvent};
 use crate::state_machine::StateMachine;
 use crate::{Event as UserEvent, FetchOptions, Offset, StartPosition, TimelineOptions, Writer};
 use catalog::Catalog;
-use chronicle_proto::pb_catalog::{Segment, TimelineStatus, UnitStatus};
-use std::collections::HashMap;
+use chronicle_proto::pb_catalog::{Segment, TimelineStatus};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 use tracing::info;
@@ -19,10 +18,9 @@ struct TimelineInner {
 
 pub struct Timeline {
     timeline_id: i64,
-    name: String,
-    conns: HashMap<String, Conn>,
     #[allow(dead_code)]
     options: TimelineOptions,
+    pool: Arc<ConnPool>,
     sm: Arc<StateMachine>,
     inner: Mutex<TimelineInner>,
 }
@@ -34,7 +32,6 @@ impl Timeline {
         name: &str,
         options: TimelineOptions,
     ) -> Result<Self, ChronicleError> {
-        let conns = resolve_conns(&catalog, &pool).await?;
         let rf = options.replication_factor;
 
         let tc = match catalog.get_timeline(name).await {
@@ -42,7 +39,13 @@ impl Timeline {
             Err(catalog::error::CatalogError::NotFound(_)) => {
                 let tc = catalog.create_timeline(name).await?;
 
-                let available: Vec<String> = conns.keys().cloned().collect();
+                let registrations = catalog.list_units().await?;
+                let available: Vec<String> = registrations
+                    .iter()
+                    .filter(|r| r.status() == chronicle_proto::pb_catalog::UnitStatus::Writable)
+                    .map(|r| r.address.clone())
+                    .collect();
+
                 let ens = ensemble::select(&available, &[], &[], rf)
                     .ok_or_else(|| {
                         ChronicleError::EnsembleUnavailable(format!(
@@ -76,7 +79,7 @@ impl Timeline {
         };
 
         let sm = Arc::new(
-            StateMachine::open(&catalog, &conns, name, &tc, rf, options.schema_id.clone()).await?
+            StateMachine::open(&catalog, &pool, &tc, rf, options.schema_id.clone()).await?
         );
 
         let (event_tx, event_rx) = mpsc::channel::<PendingEvent>(options.max_batch_size * 2);
@@ -91,28 +94,14 @@ impl Timeline {
 
         Ok(Self {
             timeline_id: tc.timeline_id,
-            name: name.to_string(),
-            conns,
             options,
+            pool,
             sm,
             inner: Mutex::new(TimelineInner {
                 event_tx: Some(event_tx),
                 group_task: Some(group_task),
             }),
         })
-    }
-
-    pub async fn close(&self) {
-        let task = {
-            let mut inner = self.inner.lock().unwrap();
-            inner.event_tx.take();
-            inner.group_task.take()
-        };
-        if let Some(task) = task {
-            let _ = task.await;
-        }
-        self.sm.close().await;
-        info!(timeline_id = self.timeline_id, "timeline closed");
     }
 
     pub fn fetch(&self, opts: FetchOptions) -> EventStream {
@@ -123,10 +112,22 @@ impl Timeline {
             StartPosition::Index { .. } => 1,
         };
 
+        let segments = self.sm.segments.clone();
+        let mut conns = std::collections::HashMap::new();
+        for seg in &segments {
+            for ep in &seg.ensemble {
+                if !conns.contains_key(ep) {
+                    if let Ok(conn) = self.pool.get_or_connect(ep) {
+                        conns.insert(ep.clone(), conn);
+                    }
+                }
+            }
+        }
+
         let mut stream = EventStream::new(
             self.timeline_id,
-            self.sm.segments.clone(),
-            &self.conns,
+            segments,
+            &conns,
             start_offset,
         );
 
@@ -141,6 +142,19 @@ impl Timeline {
         }
 
         stream
+    }
+
+    pub async fn close(&self) {
+        let task = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.event_tx.take();
+            inner.group_task.take()
+        };
+        if let Some(task) = task {
+            let _ = task.await;
+        }
+        self.sm.close().await;
+        info!(timeline_id = self.timeline_id, "timeline closed");
     }
 }
 
@@ -160,18 +174,4 @@ impl Writer for Timeline {
         rx.await
             .map_err(|_| ChronicleError::Internal("ack channel dropped".into()))?
     }
-}
-
-async fn resolve_conns(
-    catalog: &Catalog,
-    pool: &ConnPool,
-) -> Result<HashMap<String, Conn>, ChronicleError> {
-    let registrations = catalog.list_units().await?;
-    let mut conns = HashMap::new();
-    for reg in &registrations {
-        if reg.status() == UnitStatus::Writable {
-            conns.insert(reg.address.clone(), pool.get_or_connect(&reg.address)?);
-        }
-    }
-    Ok(conns)
 }
