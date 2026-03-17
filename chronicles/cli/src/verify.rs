@@ -1,4 +1,5 @@
 use libchronicle::chronicle::{Chronicle, ChronicleOptions};
+use libchronicle::TimelineOptions;
 use futures_util::StreamExt;
 use libchronicle::{Event, FetchOptions, Writer};
 use std::collections::{BTreeMap, BTreeSet};
@@ -200,8 +201,7 @@ pub async fn run(args: VerifyArgs) -> Result<(), Box<dyn std::error::Error>> {
     let chronicle = Arc::new(
         Chronicle::new(
             catalog,
-            ChronicleOptions::new()
-                .replication_factor(args.replication_factor),
+            ChronicleOptions::new(),
         ),
     );
 
@@ -226,11 +226,11 @@ pub async fn run(args: VerifyArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut timelines = Vec::new();
     for i in 0..args.timelines {
         let name = format!("verify-{}", i);
-        let timeline = match chronicle.open_timeline(&name).await {
+        let timeline = match chronicle.open_timeline(&name, TimelineOptions::new().replication_factor(args.replication_factor)).await {
             Ok(t) => t,
             Err(create_err) => {
                 info!(timeline = name, error = %create_err, "create failed, trying open");
-                match chronicle.open_timeline(&name).await {
+                match chronicle.open_timeline(&name, TimelineOptions::new().replication_factor(args.replication_factor)).await {
                     Ok(t) => t,
                     Err(e) => {
                         error!(timeline = name, create_error = %create_err, open_error = %e, "failed to create/open timeline");
@@ -302,7 +302,7 @@ pub async fn run(args: VerifyArgs) -> Result<(), Box<dyn std::error::Error>> {
             let name = format!("verify-{}", i);
 
             let mut stream = loop {
-                match chronicle.open_timeline(&name).await {
+                match chronicle.open_timeline(&name, TimelineOptions::new().replication_factor(args.replication_factor)).await {
                     Ok(t) => break t.fetch(FetchOptions::earliest()),
                     Err(_) => {
                         tokio::time::sleep(Duration::from_secs(1)).await;

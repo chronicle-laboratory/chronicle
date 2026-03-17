@@ -6,7 +6,8 @@ pub mod cursor;
 pub mod ensemble;
 pub mod error;
 pub mod observability;
-pub mod replicator;
+pub mod event_group;
+pub mod state_machine;
 pub mod timeline;
 
 #[derive(Debug, Clone)]
@@ -110,6 +111,62 @@ impl FetchOptions {
 
     pub fn timeout(mut self, timeout: std::time::Duration) -> Self {
         self.timeout = Some(timeout);
+        self
+    }
+}
+
+const DEFAULT_REPLICATION_FACTOR: usize = 3;
+const DEFAULT_BATCH_SIZE: usize = 256;
+const DEFAULT_LINGER: std::time::Duration = std::time::Duration::from_millis(5);
+
+#[derive(Debug, Clone)]
+pub struct TimelineOptions {
+    pub(crate) replication_factor: usize,
+    pub(crate) retention: Option<std::time::Duration>,
+    pub(crate) compaction: bool,
+    pub(crate) max_batch_size: usize,
+    pub(crate) linger: std::time::Duration,
+}
+
+impl Default for TimelineOptions {
+    fn default() -> Self {
+        Self {
+            replication_factor: DEFAULT_REPLICATION_FACTOR,
+            retention: None,
+            compaction: false,
+            max_batch_size: DEFAULT_BATCH_SIZE,
+            linger: DEFAULT_LINGER,
+        }
+    }
+}
+
+impl TimelineOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn replication_factor(mut self, rf: usize) -> Self {
+        self.replication_factor = rf;
+        self
+    }
+
+    pub fn retention(mut self, duration: std::time::Duration) -> Self {
+        self.retention = Some(duration);
+        self
+    }
+
+    pub fn compaction(mut self, enabled: bool) -> Self {
+        self.compaction = enabled;
+        self
+    }
+
+    pub fn max_batch_size(mut self, size: usize) -> Self {
+        self.max_batch_size = size;
+        self
+    }
+
+    pub fn linger(mut self, duration: std::time::Duration) -> Self {
+        self.linger = duration;
         self
     }
 }

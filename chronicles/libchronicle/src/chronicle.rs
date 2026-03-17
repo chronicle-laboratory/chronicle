@@ -2,16 +2,14 @@ use crate::conn::{ConnOptions, ConnPool};
 use crate::error::ChronicleError;
 use crate::observability::ClientMetrics;
 use crate::timeline::Timeline;
+use crate::TimelineOptions;
 use catalog::Catalog;
 use opentelemetry::metrics::Meter;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
 
-const DEFAULT_REPLICATION_FACTOR: usize = 3;
-
 pub struct ChronicleOptions {
-    pub(crate) replication_factor: usize,
     pub(crate) conn_opts: ConnOptions,
     meter: Option<Meter>,
 }
@@ -19,7 +17,6 @@ pub struct ChronicleOptions {
 impl Default for ChronicleOptions {
     fn default() -> Self {
         Self {
-            replication_factor: DEFAULT_REPLICATION_FACTOR,
             conn_opts: ConnOptions::default(),
             meter: None,
         }
@@ -29,11 +26,6 @@ impl Default for ChronicleOptions {
 impl ChronicleOptions {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    pub fn replication_factor(mut self, rf: usize) -> Self {
-        self.replication_factor = rf;
-        self
     }
 
     pub fn conns_per_unit(mut self, n: usize) -> Self {
@@ -70,7 +62,6 @@ impl ChronicleOptions {
 pub struct Chronicle {
     catalog: Arc<Catalog>,
     pool: Arc<ConnPool>,
-    options: ChronicleOptions,
     #[allow(dead_code)]
     metrics: Arc<ClientMetrics>,
 }
@@ -88,17 +79,16 @@ impl Chronicle {
         Self {
             pool: Arc::new(ConnPool::new(options.conn_opts.clone())),
             catalog,
-            options,
             metrics,
         }
     }
 
-    pub async fn open_timeline(&self, name: &str) -> Result<Timeline, ChronicleError> {
+    pub async fn open_timeline(&self, name: &str, options: TimelineOptions) -> Result<Timeline, ChronicleError> {
         Timeline::open(
             self.catalog.clone(),
             self.pool.clone(),
             name,
-            self.options.replication_factor,
+            options,
         )
         .await
     }
