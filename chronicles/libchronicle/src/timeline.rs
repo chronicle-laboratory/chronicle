@@ -8,9 +8,12 @@ use chronicle_proto::pb_ext::{
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
+
+const DEFAULT_BATCH_SIZE: usize = 256;
+const DEFAULT_LINGER: Duration = Duration::from_millis(5);
 
 #[derive(Debug, Clone)]
 pub(crate) struct ReconciledState {
@@ -63,7 +66,7 @@ pub(crate) async fn reconcile(
                         error = %e,
                         "reconciliation: fence request failed, retrying"
                     );
-                    tokio::time::sleep(std::time::Duration::from_millis(100 * attempts)).await;
+                    tokio::time::sleep(Duration::from_millis(100 * attempts)).await;
                 }
                 Err(e) => {
                     return Err(ChronicleError::ReconciliationFailed(format!(
@@ -136,27 +139,25 @@ pub(crate) async fn reconcile(
     })
 }
 
-struct InnerState {
+struct PendingEvent {
+    event: UserEvent,
+    tx: oneshot::Sender<Result<Offset, ChronicleError>>,
+}
+
+struct TimelineState {
     timeline_id: i64,
-    #[allow(dead_code)]
-    name: String,
     term: i64,
-    #[allow(dead_code)]
-    segments: Vec<Segment>,
-    writable_segment: Option<Segment>,
     lrs: i64,
     lra: i64,
-    acked: HashMap<i64, HashSet<String>>,
-    #[allow(dead_code)]
-    catalog_version: i64,
     replication_factor: usize,
     needs_trunc: bool,
+    acked: HashMap<i64, HashSet<String>>,
+    waiters: HashMap<i64, oneshot::Sender<Result<Offset, ChronicleError>>>,
     senders: HashMap<String, mpsc::Sender<RecordEventsRequest>>,
 }
 
 pub struct Timeline {
-    timeline_id: i64,
-    inner: Arc<Mutex<InnerState>>,
+    event_tx: mpsc::Sender<PendingEvent>,
     _tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
@@ -207,17 +208,14 @@ impl Timeline {
             "timeline created"
         );
 
-        Self::open_inner(
+        Self::start(
             updated.timeline_id,
-            name,
             1,
-            updated.segments.clone(),
-            first_segment,
             0,
             0,
-            updated.version,
             replication_factor,
             false,
+            &first_segment,
             unit_clients,
         )
         .await
@@ -226,220 +224,240 @@ impl Timeline {
     pub(crate) async fn open(
         reconciled: ReconciledState,
         unit_clients: &HashMap<String, Conn>,
-        name: &str,
+        _name: &str,
         timeline_id: i64,
         replication_factor: usize,
     ) -> Result<Self, ChronicleError> {
-        Self::open_inner(
+        Self::start(
             timeline_id,
-            name,
             reconciled.term,
-            reconciled.segments,
-            reconciled.writable_segment,
             reconciled.lrs,
             reconciled.lra,
-            reconciled.catalog_version,
             replication_factor,
             true,
+            &reconciled.writable_segment,
             unit_clients,
         )
         .await
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn open_inner(
+    async fn start(
         timeline_id: i64,
-        name: &str,
         term: i64,
-        segments: Vec<Segment>,
-        writable_segment: Segment,
         lrs: i64,
         lra: i64,
-        catalog_version: i64,
         replication_factor: usize,
         needs_trunc: bool,
+        writable_segment: &Segment,
         unit_clients: &HashMap<String, Conn>,
     ) -> Result<Self, ChronicleError> {
-        let inner = Arc::new(Mutex::new(InnerState {
+        let mut record_senders = HashMap::new();
+        let mut tasks = Vec::new();
+
+        let state = Arc::new(Mutex::new(TimelineState {
             timeline_id,
-            name: name.to_string(),
             term,
-            segments,
-            writable_segment: Some(writable_segment.clone()),
             lrs,
             lra,
-            acked: HashMap::new(),
-            catalog_version,
             replication_factor,
             needs_trunc,
+            acked: HashMap::new(),
+            waiters: HashMap::new(),
             senders: HashMap::new(),
         }));
 
-        let mut tasks = Vec::new();
-        let mut senders = HashMap::new();
-
         for endpoint in &writable_segment.ensemble {
-            let client = unit_clients.get(endpoint).ok_or_else(|| {
+            let conn = unit_clients.get(endpoint).ok_or_else(|| {
                 ChronicleError::EnsembleUnavailable(format!("no client for unit {}", endpoint))
             })?;
 
-            let (tx, response_stream) = client.open_record_stream(64).await?;
-            senders.insert(endpoint.clone(), tx);
+            let (tx, response_stream) = conn.open_record_stream(64).await?;
+            record_senders.insert(endpoint.clone(), tx);
 
-            let inner_clone = inner.clone();
+            let state_clone = state.clone();
             let ep = endpoint.clone();
             tasks.push(tokio::spawn(async move {
-                ack_collector(inner_clone, ep, response_stream).await;
+                ack_collector(state_clone, ep, response_stream).await;
             }));
         }
 
         {
-            let mut state = inner.lock().unwrap();
-            state.senders = senders;
+            let mut s = state.lock().unwrap();
+            s.senders = record_senders;
         }
+
+        let (event_tx, event_rx) = mpsc::channel::<PendingEvent>(DEFAULT_BATCH_SIZE * 2);
+
+        let state_clone = state.clone();
+        tasks.push(tokio::spawn(async move {
+            event_group_loop(state_clone, event_rx).await;
+        }));
 
         Ok(Self {
-            timeline_id,
-            inner,
+            event_tx,
             _tasks: tasks,
         })
-    }
-
-    pub fn timeline_id(&self) -> i64 {
-        self.timeline_id
-    }
-
-    pub async fn handle_ensemble_change(
-        &self,
-        catalog: &Catalog,
-        unit_clients: &HashMap<String, Conn>,
-        failed_units: &[String],
-    ) -> Result<(), ChronicleError> {
-        let available: Vec<String> = unit_clients.keys().cloned().collect();
-        let exclude: Vec<String> = failed_units.to_vec();
-
-        let (new_seg, catalog_version, name) = {
-            let mut state = self.inner.lock().unwrap();
-            let rf = state.replication_factor;
-
-            let real_ensemble = select_ensemble(&available, &[], &exclude, rf).ok_or_else(|| {
-                ChronicleError::EnsembleUnavailable("cannot find replacement ensemble".into())
-            })?;
-
-            let new_seg = Segment {
-                id: state.segments.last().map_or(1, |s| s.id + 1),
-                ensemble: real_ensemble,
-                start_offset: state.lra + 1,
-            };
-
-            state.segments.push(new_seg.clone());
-            state.writable_segment = Some(new_seg.clone());
-
-            for (_offset, acked_set) in state.acked.iter_mut() {
-                for fu in failed_units {
-                    acked_set.remove(fu);
-                }
-            }
-
-            for fu in failed_units {
-                state.senders.remove(fu);
-            }
-
-            (new_seg, state.catalog_version, state.name.clone())
-        };
-
-        let tc = catalog.get_timeline(&name).await?;
-        let mut updated = tc.clone();
-        updated.segments.push(new_seg.clone());
-        catalog.put_timeline(&updated, catalog_version).await?;
-
-        for endpoint in &new_seg.ensemble {
-            let has_sender = {
-                let state = self.inner.lock().unwrap();
-                state.senders.contains_key(endpoint)
-            };
-            if !has_sender {
-                if let Some(client) = unit_clients.get(endpoint) {
-                    let (tx, response_stream) = client.open_record_stream(64).await?;
-                    {
-                        let mut state = self.inner.lock().unwrap();
-                        state.senders.insert(endpoint.clone(), tx);
-                    }
-                    let inner_clone = self.inner.clone();
-                    let ep = endpoint.clone();
-                            tokio::spawn(async move {
-                        ack_collector(inner_clone, ep, response_stream).await;
-                    });
-                }
-            }
-        }
-
-        info!(
-            ensemble = ?new_seg.ensemble,
-            segment_id = new_seg.id,
-            "ensemble change completed"
-        );
-
-        Ok(())
     }
 }
 
 #[async_trait::async_trait]
 impl Writer for Timeline {
     async fn record(&self, event: UserEvent) -> Result<Offset, ChronicleError> {
-        let (offset, request, senders) = {
-            let mut state = self.inner.lock().unwrap();
+        let (tx, rx) = oneshot::channel();
+        self.event_tx
+            .send(PendingEvent { event, tx })
+            .await
+            .map_err(|_| ChronicleError::Internal("timeline closed".into()))?;
+        rx.await
+            .map_err(|_| ChronicleError::Internal("ack channel dropped".into()))?
+    }
+}
 
-            let ensemble = state
-                .writable_segment
-                .as_ref()
-                .ok_or_else(|| ChronicleError::Internal("no writable segment".into()))?
-                .ensemble
-                .clone();
+async fn event_group_loop(
+    state: Arc<Mutex<TimelineState>>,
+    mut event_rx: mpsc::Receiver<PendingEvent>,
+) {
+    let mut batch: Vec<PendingEvent> = Vec::with_capacity(DEFAULT_BATCH_SIZE);
 
-            let offset = state.lrs + 1;
-            state.lrs = offset;
+    loop {
+        batch.clear();
 
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as i64;
+        match event_rx.recv().await {
+            Some(first) => batch.push(first),
+            None => return,
+        }
 
-            let proto_event = Event {
-                timeline_id: state.timeline_id,
-                term: state.term,
-                offset,
-                payload: Some(event.payload.into()),
-                crc32: None,
-                timestamp: now,
-                schema_id: event.schema_id.unwrap_or(0),
-            };
+        let deadline = tokio::time::sleep(DEFAULT_LINGER);
+        tokio::pin!(deadline);
 
-            let item = RecordEventsRequestItem {
-                event: Some(proto_event),
-                trunc: state.needs_trunc,
-                lra: state.lra,
-            };
-            state.needs_trunc = false;
-
-            state.acked.insert(offset, HashSet::new());
-
-            let senders: Vec<mpsc::Sender<RecordEventsRequest>> = ensemble
-                .iter()
-                .filter_map(|ep| state.senders.get(ep).cloned())
-                .collect();
-
-            (offset, RecordEventsRequest { items: vec![item] }, senders)
-        };
-
-        for sender in &senders {
-            if let Err(e) = sender.send(request.clone()).await {
-                warn!(offset, error = %e, "failed to send record to unit");
+        loop {
+            tokio::select! {
+                biased;
+                event = event_rx.recv() => {
+                    match event {
+                        Some(e) => {
+                            batch.push(e);
+                            if batch.len() >= DEFAULT_BATCH_SIZE {
+                                break;
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                _ = &mut deadline => break,
             }
         }
 
-        Ok(Offset(offset))
+        if batch.is_empty() {
+            continue;
+        }
+
+        let (items, senders) = {
+            let mut s = state.lock().unwrap();
+            let mut items = Vec::with_capacity(batch.len());
+
+            for pending in batch.drain(..) {
+                let offset = s.lrs + 1;
+                s.lrs = offset;
+
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as i64;
+
+                let proto_event = Event {
+                    timeline_id: s.timeline_id,
+                    term: s.term,
+                    offset,
+                    payload: Some(pending.event.payload.into()),
+                    crc32: None,
+                    timestamp: now,
+                    schema_id: pending.event.schema_id.unwrap_or(0),
+                };
+
+                let item = RecordEventsRequestItem {
+                    event: Some(proto_event),
+                    trunc: s.needs_trunc,
+                    lra: s.lra,
+                };
+                s.needs_trunc = false;
+
+                s.acked.insert(offset, HashSet::new());
+                s.waiters.insert(offset, pending.tx);
+
+                items.push(item);
+            }
+
+            let ensemble = s.senders.keys().cloned().collect::<Vec<_>>();
+            let senders: Vec<mpsc::Sender<RecordEventsRequest>> = ensemble
+                .iter()
+                .filter_map(|ep| s.senders.get(ep).cloned())
+                .collect();
+
+            (items, senders)
+        };
+
+        let request = RecordEventsRequest { items };
+        for sender in &senders {
+            if let Err(e) = sender.send(request.clone()).await {
+                warn!(error = %e, "failed to send batch to unit");
+            }
+        }
     }
+}
+
+async fn ack_collector(
+    state: Arc<Mutex<TimelineState>>,
+    endpoint: String,
+    response_stream: tonic::Streaming<chronicle_proto::pb_ext::RecordEventsResponse>,
+) {
+    let mut response_stream = response_stream;
+
+    while let Ok(Some(response)) = response_stream.message().await {
+        let mut s = state.lock().unwrap();
+
+        for item in &response.items {
+            if item.code == StatusCode::Ok as i32 {
+                if let Some(ref event) = item.event {
+                    s.acked
+                        .entry(event.offset)
+                        .or_default()
+                        .insert(endpoint.clone());
+                }
+            } else {
+                warn!(
+                    endpoint = %endpoint,
+                    code = item.code,
+                    "record response error from unit"
+                );
+            }
+        }
+
+        let rf = s.replication_factor;
+        while s.lra < s.lrs {
+            let next = s.lra + 1;
+            let fully_acked = s
+                .acked
+                .get(&next)
+                .is_some_and(|set| set.len() >= rf);
+            if fully_acked {
+                s.lra = next;
+                s.acked.remove(&next);
+                if let Some(waiter) = s.waiters.remove(&next) {
+                    let _ = waiter.send(Ok(Offset(next)));
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    {
+        let mut s = state.lock().unwrap();
+        s.senders.remove(&endpoint);
+    }
+    warn!(endpoint = %endpoint, "record stream ended");
 }
 
 fn select_ensemble(
@@ -464,59 +482,6 @@ fn select_ensemble(
     } else {
         None
     }
-}
-
-async fn ack_collector(
-    inner: Arc<Mutex<InnerState>>,
-    endpoint: String,
-    response_stream: tonic::Streaming<chronicle_proto::pb_ext::RecordEventsResponse>,
-) {
-    let mut response_stream = response_stream;
-
-    while let Ok(Some(response)) = response_stream.message().await {
-        let mut state = inner.lock().unwrap();
-
-        for item in &response.items {
-            if item.code == StatusCode::Ok as i32 {
-                if let Some(ref event) = item.event {
-                    state
-                        .acked
-                        .entry(event.offset)
-                        .or_default()
-                        .insert(endpoint.clone());
-                }
-            } else {
-                warn!(
-                    endpoint = %endpoint,
-                    code = item.code,
-                    "record response error from unit"
-                );
-            }
-        }
-
-        let rf = state.replication_factor;
-        while state.lra < state.lrs {
-            let next = state.lra + 1;
-            let fully_acked = state
-                .acked
-                .get(&next)
-                .is_some_and(|set| set.len() >= rf);
-            if fully_acked {
-                state.lra = next;
-            } else {
-                break;
-            }
-        }
-
-        let lra = state.lra;
-        state.acked.retain(|&offset, _| offset > lra);
-    }
-
-    {
-        let mut state = inner.lock().unwrap();
-        state.senders.remove(&endpoint);
-    }
-    warn!(endpoint = %endpoint, "record stream ended");
 }
 
 #[cfg(test)]
