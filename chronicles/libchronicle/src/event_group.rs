@@ -1,10 +1,8 @@
 use crate::error::ChronicleError;
-use crate::state_machine::{self, ReplicationState};
+use crate::state_machine::StateMachine;
 use crate::{Event as UserEvent, Offset};
-use chronicle_proto::pb_ext::{Event, RecordEventsRequestItem};
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
 
@@ -15,7 +13,7 @@ pub(crate) struct PendingEvent {
 
 pub(crate) async fn run(
     timeline_id: i64,
-    state: Arc<Mutex<ReplicationState>>,
+    sm: Arc<StateMachine>,
     mut event_rx: mpsc::Receiver<PendingEvent>,
     max_batch_size: usize,
     linger: Duration,
@@ -55,46 +53,14 @@ pub(crate) async fn run(
             continue;
         }
 
-        let items = {
-            let mut s = state.lock().unwrap();
-            let mut items = Vec::with_capacity(batch.len());
+        let events: Vec<_> = batch
+            .drain(..)
+            .map(|p| (p.event, p.tx))
+            .collect();
 
-            for pending in batch.drain(..) {
-                let offset = s.lrs + 1;
-                s.lrs = offset;
+        let items = sm.prepare_batch(timeline_id, events);
 
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as i64;
-
-                let proto_event = Event {
-                    timeline_id,
-                    term: s.term,
-                    offset,
-                    payload: Some(pending.event.payload.into()),
-                    crc32: None,
-                    timestamp: now,
-                    schema_id: pending.event.schema_id.unwrap_or(0),
-                };
-
-                let item = RecordEventsRequestItem {
-                    event: Some(proto_event),
-                    trunc: s.needs_trunc,
-                    lra: s.lra,
-                };
-                s.needs_trunc = false;
-
-                s.acked.insert(offset, HashSet::new());
-                s.waiters.insert(offset, pending.tx);
-
-                items.push(item);
-            }
-
-            items
-        };
-
-        if let Err(e) = state_machine::replicate(&state, items).await {
+        if let Err(e) = sm.replicate(items).await {
             warn!(error = %e, "failed to replicate batch");
         }
     }

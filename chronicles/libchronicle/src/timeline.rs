@@ -3,33 +3,28 @@ use crate::cursor::EventStream;
 use crate::ensemble;
 use crate::error::ChronicleError;
 use crate::event_group::{self, PendingEvent};
-use crate::state_machine::{self, ReplicationState};
+use crate::state_machine::StateMachine;
 use crate::{Event as UserEvent, FetchOptions, Offset, StartPosition, TimelineOptions, Writer};
 use catalog::Catalog;
 use chronicle_proto::pb_catalog::{Segment, TimelineStatus, UnitStatus};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tracing::info;
 
 pub struct Timeline {
     timeline_id: i64,
-    segments: Vec<Segment>,
     conns: HashMap<String, Conn>,
     #[allow(dead_code)]
     options: TimelineOptions,
-    state: Arc<Mutex<ReplicationState>>,
+    sm: Arc<StateMachine>,
     event_tx: mpsc::Sender<PendingEvent>,
     _group_task: tokio::task::JoinHandle<()>,
-    _ack_tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl Drop for Timeline {
     fn drop(&mut self) {
         self._group_task.abort();
-        for task in &self._ack_tasks {
-            task.abort();
-        }
     }
 }
 
@@ -43,89 +38,79 @@ impl Timeline {
         let conns = resolve_conns(&catalog, &pool).await?;
         let rf = options.replication_factor;
 
-        let (timeline_id, term, lrs, lra, needs_trunc, segments, writable_segment) =
-            match catalog.get_timeline(name).await {
-                Ok(tc) => {
-                    let (term, lra, segments, writable_segment) =
-                        state_machine::new_term(&catalog, &conns, name, &tc).await?;
-                    (tc.timeline_id, term, lra, lra, true, segments, writable_segment)
-                }
-                Err(catalog::error::CatalogError::NotFound(_)) => {
-                    let tc = catalog.create_timeline(name).await?;
+        let tc = match catalog.get_timeline(name).await {
+            Ok(tc) => tc,
+            Err(catalog::error::CatalogError::NotFound(_)) => {
+                let tc = catalog.create_timeline(name).await?;
 
-                    let available: Vec<String> = conns.keys().cloned().collect();
-                    let ens = ensemble::select(&available, &[], &[], rf)
-                        .ok_or_else(|| {
-                            ChronicleError::EnsembleUnavailable(format!(
-                                "need {} units, have {}",
-                                rf, available.len()
-                            ))
-                        })?;
+                let available: Vec<String> = conns.keys().cloned().collect();
+                let ens = ensemble::select(&available, &[], &[], rf)
+                    .ok_or_else(|| {
+                        ChronicleError::EnsembleUnavailable(format!(
+                            "need {} units, have {}",
+                            rf, available.len()
+                        ))
+                    })?;
 
-                    let first_segment = Segment {
-                        id: 1,
-                        ensemble: ens.clone(),
-                        start_offset: 1,
-                    };
+                let first_segment = Segment {
+                    id: 1,
+                    ensemble: ens.clone(),
+                    start_offset: 1,
+                };
 
-                    let mut updated = tc.clone();
-                    updated.status = TimelineStatus::Active as i32;
-                    updated.segments = vec![first_segment.clone()];
-                    updated.term = 1;
-                    let updated = catalog.put_timeline(&updated, tc.version).await?;
+                let mut updated = tc.clone();
+                updated.status = TimelineStatus::Active as i32;
+                updated.segments = vec![first_segment];
+                updated.term = 0;
+                let updated = catalog.put_timeline(&updated, tc.version).await?;
 
-                    info!(
-                        timeline = name,
-                        timeline_id = updated.timeline_id,
-                        ensemble = ?ens,
-                        "timeline created"
-                    );
+                info!(
+                    timeline = name,
+                    timeline_id = updated.timeline_id,
+                    ensemble = ?ens,
+                    "timeline created"
+                );
 
-                    (updated.timeline_id, 1, 0, 0, false, updated.segments, first_segment)
-                }
-                Err(e) => return Err(e.into()),
-            };
+                updated
+            }
+            Err(e) => return Err(e.into()),
+        };
 
-        let (state, ack_tasks) = state_machine::init(
-            timeline_id, term, lrs, lra, rf, needs_trunc,
-            &writable_segment, &conns,
-        ).await?;
+        let sm = Arc::new(
+            StateMachine::open(&catalog, &conns, name, &tc, rf).await?
+        );
 
         let (event_tx, event_rx) = mpsc::channel::<PendingEvent>(options.max_batch_size * 2);
 
-        let state_clone = state.clone();
+        let sm_clone = sm.clone();
         let batch_size = options.max_batch_size;
         let linger = options.linger;
+        let timeline_id = tc.timeline_id;
         let group_task = tokio::spawn(async move {
-            event_group::run(timeline_id, state_clone, event_rx, batch_size, linger).await;
+            event_group::run(timeline_id, sm_clone, event_rx, batch_size, linger).await;
         });
 
         Ok(Self {
-            timeline_id,
-            segments,
+            timeline_id: tc.timeline_id,
             conns,
             options,
-            state,
+            sm,
             event_tx,
             _group_task: group_task,
-            _ack_tasks: ack_tasks,
         })
     }
 
     pub fn fetch(&self, opts: FetchOptions) -> EventStream {
         let start_offset = match opts.start {
             StartPosition::Earliest => 1,
-            StartPosition::Latest => {
-                let s = self.state.lock().unwrap();
-                s.lra + 1
-            }
+            StartPosition::Latest => self.sm.lra() + 1,
             StartPosition::Offset(o) => o,
             StartPosition::Index { .. } => 1,
         };
 
         let mut stream = EventStream::new(
             self.timeline_id,
-            self.segments.clone(),
+            self.sm.segments.clone(),
             &self.conns,
             start_offset,
         );
