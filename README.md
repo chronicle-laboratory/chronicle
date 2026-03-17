@@ -13,7 +13,7 @@ Modern distributed indexed streaming system.
 ## Features
 
 - **Streaming API** — Simple `record` and `fetch` operations
-- **Key-based events** — Record and fetch events by key with indexed lookups
+- **Key-based compaction** — Retain latest value per key for changelog and state snapshot workloads
 - **Secondary offset** — Look up events by both primary offset and secondary index
 - **Transactions** — Atomic writes across multiple keys
 - **Native schema** — Schema enforcement built into the core
