@@ -229,6 +229,9 @@ impl Unit {
             address: address.clone(),
             status: UnitStatus::Writable.into(),
             zone: options.server.zone.clone(),
+            cpu_usage: 0.0,
+            memory_usage: 0.0,
+            disk_usage: 0.0,
         };
         let mut last_err = None;
         for attempt in 0..10 {
@@ -347,6 +350,7 @@ fn bg_health_monitor(
     zone: String,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        let mut sys = sysinfo::System::new();
         let mut ticker = tokio::time::interval(Duration::from_secs(30));
         loop {
             tokio::select! {
@@ -355,39 +359,45 @@ fn bg_health_monitor(
                     break;
                 }
                 _ = ticker.tick() => {
-                    check_disk_health(&state, &data_dir, &catalog, &address, &zone).await;
+                    report_load(&mut sys, &state, &data_dir, &catalog, &address, &zone).await;
                 }
             }
         }
     })
 }
 
-async fn check_disk_health(
+/// Compute system load and re-register with current CPU/memory/disk usage.
+/// Also handles disk watermark transitions (WRITABLE <-> READONLY).
+async fn report_load(
+    sys: &mut sysinfo::System,
     state: &AtomicU8,
     data_dir: &str,
     catalog: &Arc<Catalog>,
     address: &str,
     zone: &str,
 ) {
-    let c_path = match std::ffi::CString::new(data_dir) {
-        Ok(p) => p,
-        Err(_) => return,
+    // CPU: refresh and compute average across all cores (0.0–1.0)
+    sys.refresh_cpu_usage();
+    let cpu_usage = if sys.cpus().is_empty() {
+        0.0
+    } else {
+        let total: f32 = sys.cpus().iter().map(|c| c.cpu_usage()).sum();
+        (total / sys.cpus().len() as f32 / 100.0) as f64
     };
-    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
-    let ret = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
-    if ret != 0 {
-        warn!(path = data_dir, "failed to statvfs data directory");
-        return;
-    }
 
-    let total = stat.f_blocks as u64 * stat.f_frsize as u64;
-    let available = stat.f_bavail as u64 * stat.f_frsize as u64;
+    // Memory: used / total (0.0–1.0)
+    sys.refresh_memory();
+    let memory_usage = if sys.total_memory() == 0 {
+        0.0
+    } else {
+        sys.used_memory() as f64 / sys.total_memory() as f64
+    };
 
-    if total == 0 {
-        return;
-    }
+    // Disk: used / total (0.0–1.0) via statvfs
+    let disk_usage = disk_usage_ratio(data_dir);
 
-    let available_pct = (available as f64 / total as f64) * 100.0;
+    // Disk watermark transitions
+    let available_pct = (1.0 - disk_usage) * 100.0;
     let current = state.load(Ordering::Relaxed);
 
     if current == STATE_WRITABLE && available_pct < DISK_LOW_WATERMARK_PCT {
@@ -396,31 +406,49 @@ async fn check_disk_health(
             "disk low — switching to READONLY"
         );
         state.store(STATE_READONLY, Ordering::Relaxed);
-
-        let reg = UnitRegistration {
-            address: address.to_string(),
-            status: UnitStatus::Readonly.into(),
-            zone: zone.to_string(),
-        };
-        if let Err(e) = catalog.register_unit(&reg).await {
-            warn!(error = ?e, "failed to update catalog to READONLY");
-        }
     } else if current == STATE_READONLY && available_pct > DISK_HIGH_WATERMARK_PCT {
         info!(
             available_pct = format!("{:.1}", available_pct),
             "disk recovered — switching to WRITABLE"
         );
         state.store(STATE_WRITABLE, Ordering::Relaxed);
-
-        let reg = UnitRegistration {
-            address: address.to_string(),
-            status: UnitStatus::Writable.into(),
-            zone: zone.to_string(),
-        };
-        if let Err(e) = catalog.register_unit(&reg).await {
-            warn!(error = ?e, "failed to update catalog to WRITABLE");
-        }
     }
+
+    let status = if state.load(Ordering::Relaxed) == STATE_WRITABLE {
+        UnitStatus::Writable
+    } else {
+        UnitStatus::Readonly
+    };
+
+    let reg = UnitRegistration {
+        address: address.to_string(),
+        status: status.into(),
+        zone: zone.to_string(),
+        cpu_usage,
+        memory_usage,
+        disk_usage,
+    };
+    if let Err(e) = catalog.register_unit(&reg).await {
+        warn!(error = ?e, "failed to report load to catalog");
+    }
+}
+
+fn disk_usage_ratio(data_dir: &str) -> f64 {
+    let c_path = match std::ffi::CString::new(data_dir) {
+        Ok(p) => p,
+        Err(_) => return 0.0,
+    };
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    let ret = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
+    if ret != 0 || stat.f_blocks == 0 {
+        return 0.0;
+    }
+    let total = stat.f_blocks as u64 * stat.f_frsize as u64;
+    let available = stat.f_bavail as u64 * stat.f_frsize as u64;
+    if total == 0 {
+        return 0.0;
+    }
+    1.0 - (available as f64 / total as f64)
 }
 
 async fn serve_prometheus(

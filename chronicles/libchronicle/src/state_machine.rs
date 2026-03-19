@@ -1,5 +1,5 @@
 use crate::conn::{Conn, ConnPool};
-use crate::ensemble::{EnsembleSelector, UnitInfo};
+use crate::ensemble::EnsembleSelector;
 use crate::error::ChronicleError;
 use crate::Offset;
 use catalog::Catalog;
@@ -61,17 +61,7 @@ impl StateMachine {
             .unwrap_or_default();
 
         let registrations = catalog.list_units().await?;
-        let units: Vec<UnitInfo> = registrations
-            .iter()
-            .map(|r| UnitInfo {
-                address: r.address.clone(),
-                zone: r.zone.clone(),
-                traffic: 0.0,
-                pressure: 0.0,
-                writable: r.status() == chronicle_proto::pb_catalog::UnitStatus::Writable,
-            })
-            .collect();
-        let selector = EnsembleSelector::from_units(units);
+        let selector = EnsembleSelector::from_units(registrations.clone());
         let ensemble = selector
             .select(replication_factor, &previous, &[])
             .ok_or_else(|| {

@@ -1,14 +1,9 @@
+use chronicle_proto::pb_catalog::{UnitRegistration, UnitStatus};
 use std::collections::HashMap;
 
-/// Runtime info about a unit, combining static metadata (zone) with
-/// dynamic metrics (traffic, pressure).
-#[derive(Debug, Clone)]
-pub struct UnitInfo {
-    pub address: String,
-    pub zone: String,
-    pub traffic: f64,
-    pub pressure: f64,
-    pub writable: bool,
+fn pressure(u: &UnitRegistration) -> f64 {
+    // Weight: CPU and memory are primary, disk is a soft factor
+    0.4 * u.cpu_usage + 0.4 * u.memory_usage + 0.2 * u.disk_usage
 }
 
 /// Selects ensembles with a three-tier priority:
@@ -18,9 +13,9 @@ pub struct UnitInfo {
 /// 2. **Zone diversity** — round-robin across zones so replicas span
 ///    failure domains
 /// 3. **Lowest pressure** — within each zone, pick the unit with the
-///    lowest pressure score
+///    lowest pressure (CPU/memory/disk)
 pub struct EnsembleSelector {
-    units: Vec<UnitInfo>,
+    units: Vec<UnitRegistration>,
 }
 
 impl EnsembleSelector {
@@ -28,27 +23,27 @@ impl EnsembleSelector {
         Self { units: Vec::new() }
     }
 
-    pub fn from_units(units: Vec<UnitInfo>) -> Self {
+    pub fn from_units(units: Vec<UnitRegistration>) -> Self {
         Self { units }
     }
 
     /// Replace the full unit list (e.g. after a catalog refresh).
-    pub fn update_units(&mut self, units: Vec<UnitInfo>) {
+    pub fn update_units(&mut self, units: Vec<UnitRegistration>) {
         self.units = units;
     }
 
-    /// Update traffic and pressure for a single unit.
-    pub fn update_metrics(&mut self, address: &str, traffic: f64, pressure: f64) {
+    /// Update load metrics for a single unit.
+    pub fn update_metrics(&mut self, address: &str, cpu: f64, memory: f64, disk: f64) {
         if let Some(u) = self.units.iter_mut().find(|u| u.address == address) {
-            u.traffic = traffic;
-            u.pressure = pressure;
+            u.cpu_usage = cpu;
+            u.memory_usage = memory;
+            u.disk_usage = disk;
         }
     }
 
     /// Select an ensemble of `rf` units.
     ///
-    /// - `previous`: addresses from the prior ensemble — these are preferred
-    ///   if still writable and not excluded
+    /// - `previous`: addresses from the prior ensemble — preferred if still writable
     /// - `exclude`: addresses to never select
     pub fn select(
         &self,
@@ -56,10 +51,10 @@ impl EnsembleSelector {
         previous: &[String],
         exclude: &[String],
     ) -> Option<Vec<String>> {
-        let candidates: Vec<&UnitInfo> = self
+        let candidates: Vec<&UnitRegistration> = self
             .units
             .iter()
-            .filter(|u| u.writable && !exclude.contains(&u.address))
+            .filter(|u| u.status() == UnitStatus::Writable && !exclude.contains(&u.address))
             .collect();
 
         if candidates.len() < rf {
@@ -76,7 +71,8 @@ impl EnsembleSelector {
             }
             if let Some(u) = candidates.iter().find(|u| u.address == *addr) {
                 ensemble.push(u.address.clone());
-                *used_zones.entry(u.zone.as_str()).or_default() += 1;
+                let zone = if u.zone.is_empty() { "default" } else { u.zone.as_str() };
+                *used_zones.entry(zone).or_default() += 1;
             }
         }
 
@@ -85,27 +81,27 @@ impl EnsembleSelector {
         }
 
         // Phase 2: fill remaining slots with zone-diverse, low-pressure units
-        let remaining: Vec<&UnitInfo> = candidates
+        let remaining: Vec<&UnitRegistration> = candidates
             .iter()
             .filter(|u| !ensemble.contains(&u.address))
             .copied()
             .collect();
 
         // Group by zone, sort each group by pressure (ascending)
-        let mut by_zone: HashMap<&str, Vec<&UnitInfo>> = HashMap::new();
+        let mut by_zone: HashMap<&str, Vec<&UnitRegistration>> = HashMap::new();
         for u in &remaining {
-            by_zone.entry(u.zone.as_str()).or_default().push(u);
+            let zone = if u.zone.is_empty() { "default" } else { u.zone.as_str() };
+            by_zone.entry(zone).or_default().push(u);
         }
         for group in by_zone.values_mut() {
             group.sort_by(|a, b| {
-                a.pressure
-                    .partial_cmp(&b.pressure)
+                pressure(a)
+                    .partial_cmp(&pressure(b))
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
         }
 
-        // Sort zones: prefer zones with fewer already-selected units,
-        // then alphabetically for determinism
+        // Sort zones: prefer zones with fewer already-selected units
         let mut zone_keys: Vec<&str> = by_zone.keys().copied().collect();
         zone_keys.sort_by(|a, b| {
             let count_a = used_zones.get(a).copied().unwrap_or(0);
@@ -150,23 +146,25 @@ impl EnsembleSelector {
 mod tests {
     use super::*;
 
-    fn unit(addr: &str, zone: &str) -> UnitInfo {
-        UnitInfo {
+    fn unit(addr: &str, zone: &str) -> UnitRegistration {
+        UnitRegistration {
             address: addr.into(),
             zone: zone.into(),
-            traffic: 0.0,
-            pressure: 0.0,
-            writable: true,
+            status: UnitStatus::Writable as i32,
+            cpu_usage: 0.0,
+            memory_usage: 0.0,
+            disk_usage: 0.0,
         }
     }
 
-    fn unit_with_pressure(addr: &str, zone: &str, pressure: f64) -> UnitInfo {
-        UnitInfo {
+    fn unit_with_load(addr: &str, zone: &str, cpu: f64, mem: f64, disk: f64) -> UnitRegistration {
+        UnitRegistration {
             address: addr.into(),
             zone: zone.into(),
-            traffic: 0.0,
-            pressure,
-            writable: true,
+            status: UnitStatus::Writable as i32,
+            cpu_usage: cpu,
+            memory_usage: mem,
+            disk_usage: disk,
         }
     }
 
@@ -191,7 +189,6 @@ mod tests {
         ]);
         let prev = vec!["b".into(), "c".into()];
         let result = sel.select(3, &prev, &[]).unwrap();
-        // b and c should be kept, plus one more
         assert!(result.contains(&"b".to_string()));
         assert!(result.contains(&"c".to_string()));
         assert_eq!(result.len(), 3);
@@ -200,7 +197,7 @@ mod tests {
     #[test]
     fn previous_skips_non_writable() {
         let mut b = unit("b", "zone-b");
-        b.writable = false;
+        b.status = UnitStatus::Readonly as i32;
         let sel = EnsembleSelector::from_units(vec![
             unit("a", "zone-a"),
             b,
@@ -209,7 +206,6 @@ mod tests {
         ]);
         let prev = vec!["b".into(), "c".into()];
         let result = sel.select(2, &prev, &[]).unwrap();
-        // b is not writable, should be skipped
         assert!(!result.contains(&"b".to_string()));
         assert!(result.contains(&"c".to_string()));
         assert_eq!(result.len(), 2);
@@ -228,12 +224,8 @@ mod tests {
         let zones: Vec<&str> = result
             .iter()
             .map(|addr| {
-                sel.units
-                    .iter()
-                    .find(|u| u.address == *addr)
-                    .unwrap()
-                    .zone
-                    .as_str()
+                let u = sel.units.iter().find(|u| u.address == *addr).unwrap();
+                u.zone.as_str()
             })
             .collect();
         let mut unique = zones.clone();
@@ -245,9 +237,9 @@ mod tests {
     #[test]
     fn prefers_low_pressure() {
         let sel = EnsembleSelector::from_units(vec![
-            unit_with_pressure("hot", "zone-a", 0.9),
-            unit_with_pressure("cold", "zone-a", 0.1),
-            unit_with_pressure("other", "zone-b", 0.2),
+            unit_with_load("hot", "zone-a", 0.9, 0.8, 0.5),
+            unit_with_load("cold", "zone-a", 0.1, 0.1, 0.1),
+            unit_with_load("other", "zone-b", 0.2, 0.2, 0.1),
         ]);
         let result = sel.select(2, &[], &[]).unwrap();
         assert!(result.contains(&"cold".to_string()));
@@ -256,7 +248,6 @@ mod tests {
 
     #[test]
     fn zone_diversity_after_previous() {
-        // Previous has 2 from zone-a. Fill should prefer zone-b over zone-a.
         let sel = EnsembleSelector::from_units(vec![
             unit("a1", "zone-a"),
             unit("a2", "zone-a"),
@@ -267,7 +258,6 @@ mod tests {
         let result = sel.select(3, &prev, &[]).unwrap();
         assert!(result.contains(&"a1".to_string()));
         assert!(result.contains(&"a2".to_string()));
-        // Should pick b1 (zone-b) over a3 (zone-a) for diversity
         assert!(result.contains(&"b1".to_string()));
     }
 
@@ -292,7 +282,7 @@ mod tests {
     #[test]
     fn skips_non_writable() {
         let mut u = unit("a", "zone-a");
-        u.writable = false;
+        u.status = UnitStatus::Readonly as i32;
         let sel = EnsembleSelector::from_units(vec![u, unit("b", "zone-b")]);
         assert!(sel.select(2, &[], &[]).is_none());
     }
@@ -300,15 +290,15 @@ mod tests {
     #[test]
     fn update_metrics() {
         let mut sel = EnsembleSelector::from_units(vec![
-            unit_with_pressure("a", "zone-a", 0.0),
-            unit_with_pressure("b", "zone-a", 0.5),
-            unit_with_pressure("c", "zone-b", 0.3),
+            unit_with_load("a", "zone-a", 0.0, 0.0, 0.0),
+            unit_with_load("b", "zone-a", 0.5, 0.5, 0.3),
+            unit_with_load("c", "zone-b", 0.3, 0.2, 0.1),
         ]);
         let result = sel.select(2, &[], &[]).unwrap();
         assert!(result.contains(&"a".to_string()));
 
-        // Now a gets heavy pressure
-        sel.update_metrics("a", 0.0, 1.0);
+        // Now a gets heavy load
+        sel.update_metrics("a", 0.95, 0.9, 0.8);
         let result = sel.select(2, &[], &[]).unwrap();
         assert!(result.contains(&"b".to_string()));
         assert!(result.contains(&"c".to_string()));
