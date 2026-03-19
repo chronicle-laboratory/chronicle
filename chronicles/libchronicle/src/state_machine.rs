@@ -1,5 +1,5 @@
 use crate::conn::{Conn, ConnPool};
-use crate::ensemble;
+use crate::ensemble::{EnsembleSelector, UnitInfo};
 use crate::error::ChronicleError;
 use crate::Offset;
 use catalog::Catalog;
@@ -59,18 +59,28 @@ impl StateMachine {
             Some(vs) => vs.value.ensemble.clone(),
             None => {
                 let registrations = catalog.list_units().await?;
-                let available: Vec<String> = registrations
+                let units: Vec<UnitInfo> = registrations
                     .iter()
-                    .filter(|r| r.status() == chronicle_proto::pb_catalog::UnitStatus::Writable)
-                    .map(|r| r.address.clone())
+                    .map(|r| UnitInfo {
+                        address: r.address.clone(),
+                        zone: r.zone.clone(),
+                        traffic: 0.0,
+                        pressure: 0.0,
+                        writable: r.status() == chronicle_proto::pb_catalog::UnitStatus::Writable,
+                    })
                     .collect();
-                ensemble::select(&available, &[], &[], replication_factor)
-                    .ok_or_else(|| {
-                        ChronicleError::EnsembleUnavailable(format!(
-                            "need {} units, have {}",
-                            replication_factor, available.len()
-                        ))
-                    })?
+                let selector = EnsembleSelector::from_units(units);
+                selector.select(replication_factor, &[]).ok_or_else(|| {
+                    ChronicleError::EnsembleUnavailable(format!(
+                        "need {} writable units, have {}",
+                        replication_factor,
+                        registrations
+                            .iter()
+                            .filter(|r| r.status()
+                                == chronicle_proto::pb_catalog::UnitStatus::Writable)
+                            .count()
+                    ))
+                })?
             }
         };
 
