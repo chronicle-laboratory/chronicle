@@ -1,16 +1,17 @@
-use chronicle_proto::pb_catalog::{Segment, TimelineMeta, UnitRegistration, UnitRegistry};
+use chronicle_proto::pb_catalog::{Segment, TimelineMeta, UnitRegistration};
 use liboxia::client::{GetOption, OxiaClient, PutOption};
 use liboxia::client_builder::OxiaClientBuilder;
 use liboxia::errors::OxiaError;
 use prost::Message;
 use std::sync::atomic::{AtomicI64, Ordering};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::Versioned;
 use crate::error::CatalogError;
 
 const KEY_PREFIX: &str = "/chronicle/timelines/";
-const UNITS_KEY: &str = "/chronicle/units";
+const UNITS_PREFIX: &str = "/chronicle/units/";
+const UNITS_MAX: &str = "/chronicle/units0"; // '0' > '/' in ASCII
 
 pub struct OxiaCatalog {
     client: OxiaClient,
@@ -53,38 +54,28 @@ impl OxiaCatalog {
         Ok(meta)
     }
 
-    async fn read_unit_registry(&self) -> Result<(UnitRegistry, i64), CatalogError> {
-        match self.client.get_with_options(UNITS_KEY.to_string(), vec![GetOption::IncludeValue()]).await {
-            Ok(result) => {
-                let value = result.value.unwrap_or_default();
-                let registry = UnitRegistry::decode(value.as_slice())
-                    .map_err(|e| CatalogError::Internal(format!("failed to decode unit registry: {}", e)))?;
-                Ok((registry, result.version.version_id))
-            }
-            Err(OxiaError::KeyNotFound()) => {
-                Ok((UnitRegistry { units: vec![] }, -1))
-            }
-            Err(e) => Err(CatalogError::from(e)),
-        }
+    /// Build the key for a unit: /chronicle/units/{zone}/{sanitized_address}
+    fn unit_key(registration: &UnitRegistration) -> String {
+        let zone = if registration.zone.is_empty() {
+            "default"
+        } else {
+            &registration.zone
+        };
+        let unit_id = Self::sanitize_address(&registration.address);
+        format!("{}{}/{}", UNITS_PREFIX, zone, unit_id)
     }
 
-    async fn write_unit_registry(&self, registry: &UnitRegistry, expected_version: i64) -> Result<(), CatalogError> {
-        let value = registry.encode_to_vec();
-        self.client
-            .put_with_options(
-                UNITS_KEY.to_string(),
-                value,
-                vec![PutOption::ExpectVersionId(expected_version)],
-            )
-            .await
-            .map_err(|e| match e {
-                OxiaError::UnexpectedVersionId() => CatalogError::VersionConflict {
-                    expected: expected_version,
-                    actual: -1,
-                },
-                other => CatalogError::from(other),
-            })?;
-        Ok(())
+    /// Build the key for unregister by address: scan to find the key.
+    fn unit_key_for_address(zone: &str, address: &str) -> String {
+        let zone = if zone.is_empty() { "default" } else { zone };
+        let unit_id = Self::sanitize_address(address);
+        format!("{}{}/{}", UNITS_PREFIX, zone, unit_id)
+    }
+
+    fn sanitize_address(address: &str) -> String {
+        address
+            .replace("://", "_")
+            .replace(['/', ':'], "_")
     }
 }
 
@@ -263,62 +254,53 @@ impl OxiaCatalog {
         Ok(segments.into_iter().last())
     }
 
+    /// Register a unit at /chronicle/units/{zone}/{unit-id}.
+    /// Each unit has its own key — no CAS contention between units.
     pub async fn register_unit(
         &self,
         registration: &UnitRegistration,
     ) -> Result<(), CatalogError> {
-        info!(address = %registration.address, "register_unit: starting");
+        let key = Self::unit_key(registration);
+        let value = registration.encode_to_vec();
+        info!(address = %registration.address, zone = %registration.zone, key = %key, "register_unit");
 
-        for attempt in 0..10 {
-            let (mut registry, version) = self.read_unit_registry().await?;
+        self.client
+            .put(key, value)
+            .await
+            .map_err(CatalogError::from)?;
 
-            registry.units.retain(|u| u.address != registration.address);
-            registry.units.push(registration.clone());
-
-            match self.write_unit_registry(&registry, version).await {
-                Ok(()) => {
-                    info!(address = %registration.address, "register_unit: success");
-                    return Ok(());
-                }
-                Err(CatalogError::VersionConflict { .. }) => {
-                    warn!("register_unit: CAS conflict on attempt {}, retrying", attempt);
-                    if attempt >= 5 {
-                        let value = registry.encode_to_vec();
-                        self.client
-                            .put(UNITS_KEY.to_string(), value)
-                            .await
-                            .map_err(CatalogError::from)?;
-                        return Ok(());
-                    }
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-        Err(CatalogError::Internal("register_unit: too many CAS retries".into()))
+        Ok(())
     }
 
-    pub async fn unregister_unit(&self, address: &str) -> Result<(), CatalogError> {
-        for _ in 0..10 {
-            let (mut registry, version) = self.read_unit_registry().await?;
-
-            let before = registry.units.len();
-            registry.units.retain(|u| u.address != address);
-            if registry.units.len() == before {
-                return Err(CatalogError::NotFound(address.to_string()));
-            }
-
-            match self.write_unit_registry(&registry, version).await {
-                Ok(()) => return Ok(()),
-                Err(CatalogError::VersionConflict { .. }) => continue,
-                Err(e) => return Err(e),
-            }
-        }
-        Err(CatalogError::Internal("unregister_unit: too many CAS retries".into()))
+    /// Unregister a unit by deleting its key.
+    pub async fn unregister_unit(&self, address: &str, zone: &str) -> Result<(), CatalogError> {
+        let key = Self::unit_key_for_address(zone, address);
+        self.client
+            .delete(key)
+            .await
+            .map_err(|e| match e {
+                OxiaError::KeyNotFound() => CatalogError::NotFound(address.to_string()),
+                other => CatalogError::from(other),
+            })?;
+        Ok(())
     }
 
+    /// List all registered units across all zones via range scan.
     pub async fn list_units(&self) -> Result<Vec<UnitRegistration>, CatalogError> {
-        let (registry, _version) = self.read_unit_registry().await?;
-        Ok(registry.units)
+        let result = self
+            .client
+            .range_scan(UNITS_PREFIX.to_string(), UNITS_MAX.to_string())
+            .await
+            .map_err(CatalogError::from)?;
+
+        let mut units = Vec::with_capacity(result.records.len());
+        for record in &result.records {
+            if let Some(ref value) = record.value {
+                let reg = UnitRegistration::decode(value.as_slice())
+                    .map_err(|e| CatalogError::Internal(format!("failed to decode unit: {}", e)))?;
+                units.push(reg);
+            }
+        }
+        Ok(units)
     }
 }

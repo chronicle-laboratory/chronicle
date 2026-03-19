@@ -51,6 +51,8 @@ pub struct ServerOptions {
     pub bind_address: SocketAddr,
     #[serde(default)]
     pub advertise_address: Option<String>,
+    #[serde(default = "default_zone")]
+    pub zone: String,
 }
 
 impl Default for ServerOptions {
@@ -58,8 +60,13 @@ impl Default for ServerOptions {
         Self {
             bind_address: default_server_address(),
             advertise_address: None,
+            zone: default_zone(),
         }
     }
+}
+
+fn default_zone() -> String {
+    "default".to_string()
 }
 
 #[derive(Debug, Deserialize)]

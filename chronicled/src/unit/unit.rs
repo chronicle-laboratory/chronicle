@@ -46,6 +46,7 @@ pub struct Unit {
     wal: Wal,
     catalog: Arc<Catalog>,
     address: String,
+    zone: String,
     _meter_provider: opentelemetry_sdk::metrics::SdkMeterProvider,
     _observable_gauges: Vec<opentelemetry::metrics::ObservableGauge<u64>>,
 }
@@ -221,11 +222,13 @@ impl Unit {
             options.storage.dir.clone(),
             catalog.clone(),
             address.clone(),
+            options.server.zone.clone(),
         );
 
         let registration = UnitRegistration {
             address: address.clone(),
             status: UnitStatus::Writable.into(),
+            zone: options.server.zone.clone(),
         };
         let mut last_err = None;
         for attempt in 0..10 {
@@ -266,6 +269,7 @@ impl Unit {
             wal,
             catalog,
             address,
+            zone: options.server.zone.clone(),
             _meter_provider: meter_provider,
             _observable_gauges: observable_gauges,
         })
@@ -274,7 +278,7 @@ impl Unit {
     pub async fn stop(self) {
         info!("unit shutting down");
 
-        if let Err(err) = self.catalog.unregister_unit(&self.address).await {
+        if let Err(err) = self.catalog.unregister_unit(&self.address, &self.zone).await {
             warn!(error = ?err, address = %self.address, "failed to unregister unit from catalog");
         } else {
             info!(address = %self.address, "unit unregistered from catalog");
@@ -340,6 +344,7 @@ fn bg_health_monitor(
     data_dir: String,
     catalog: Arc<Catalog>,
     address: String,
+    zone: String,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(30));
@@ -350,7 +355,7 @@ fn bg_health_monitor(
                     break;
                 }
                 _ = ticker.tick() => {
-                    check_disk_health(&state, &data_dir, &catalog, &address).await;
+                    check_disk_health(&state, &data_dir, &catalog, &address, &zone).await;
                 }
             }
         }
@@ -362,6 +367,7 @@ async fn check_disk_health(
     data_dir: &str,
     catalog: &Arc<Catalog>,
     address: &str,
+    zone: &str,
 ) {
     let c_path = match std::ffi::CString::new(data_dir) {
         Ok(p) => p,
@@ -394,6 +400,7 @@ async fn check_disk_health(
         let reg = UnitRegistration {
             address: address.to_string(),
             status: UnitStatus::Readonly.into(),
+            zone: zone.to_string(),
         };
         if let Err(e) = catalog.register_unit(&reg).await {
             warn!(error = ?e, "failed to update catalog to READONLY");
@@ -408,6 +415,7 @@ async fn check_disk_health(
         let reg = UnitRegistration {
             address: address.to_string(),
             status: UnitStatus::Writable.into(),
+            zone: zone.to_string(),
         };
         if let Err(e) = catalog.register_unit(&reg).await {
             warn!(error = ?e, "failed to update catalog to WRITABLE");

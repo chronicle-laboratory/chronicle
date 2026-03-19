@@ -53,36 +53,38 @@ impl StateMachine {
             Err(e) => return Err(e.into()),
         };
 
-        // Determine ensemble: use last segment's ensemble, or select a new one
+        // Select ensemble: prefer previous ensemble members, then zone-diverse low-pressure units
         let last_segment = catalog.get_last_segment(&tc.name).await?;
-        let ensemble = match &last_segment {
-            Some(vs) => vs.value.ensemble.clone(),
-            None => {
-                let registrations = catalog.list_units().await?;
-                let units: Vec<UnitInfo> = registrations
-                    .iter()
-                    .map(|r| UnitInfo {
-                        address: r.address.clone(),
-                        zone: r.zone.clone(),
-                        traffic: 0.0,
-                        pressure: 0.0,
-                        writable: r.status() == chronicle_proto::pb_catalog::UnitStatus::Writable,
-                    })
-                    .collect();
-                let selector = EnsembleSelector::from_units(units);
-                selector.select(replication_factor, &[]).ok_or_else(|| {
-                    ChronicleError::EnsembleUnavailable(format!(
-                        "need {} writable units, have {}",
-                        replication_factor,
-                        registrations
-                            .iter()
-                            .filter(|r| r.status()
-                                == chronicle_proto::pb_catalog::UnitStatus::Writable)
-                            .count()
-                    ))
-                })?
-            }
-        };
+        let previous: Vec<String> = last_segment
+            .as_ref()
+            .map(|vs| vs.value.ensemble.clone())
+            .unwrap_or_default();
+
+        let registrations = catalog.list_units().await?;
+        let units: Vec<UnitInfo> = registrations
+            .iter()
+            .map(|r| UnitInfo {
+                address: r.address.clone(),
+                zone: r.zone.clone(),
+                traffic: 0.0,
+                pressure: 0.0,
+                writable: r.status() == chronicle_proto::pb_catalog::UnitStatus::Writable,
+            })
+            .collect();
+        let selector = EnsembleSelector::from_units(units);
+        let ensemble = selector
+            .select(replication_factor, &previous, &[])
+            .ok_or_else(|| {
+                ChronicleError::EnsembleUnavailable(format!(
+                    "need {} writable units, have {}",
+                    replication_factor,
+                    registrations
+                        .iter()
+                        .filter(|r| r.status()
+                            == chronicle_proto::pb_catalog::UnitStatus::Writable)
+                        .count()
+                ))
+            })?;
 
         let new_term = tc.term + 1;
         let mut tc_update = tc.clone();

@@ -11,19 +11,14 @@ pub struct UnitInfo {
     pub writable: bool,
 }
 
-impl UnitInfo {
-    fn score(&self) -> f64 {
-        self.traffic + self.pressure * 2.0
-    }
-}
-
-/// Selects ensembles using zone-aware placement, traffic load, and backpressure.
+/// Selects ensembles with a three-tier priority:
 ///
-/// Selection strategy:
-/// 1. Filter to writable, non-excluded candidates
-/// 2. Sort candidates within each zone by score (traffic + 2×pressure)
-/// 3. Round-robin across zones to maximize zone diversity
-/// 4. Within each zone pick the lowest-scored unit first
+/// 1. **Previous ensemble** — keep members from the prior ensemble if still
+///    writable (minimizes data movement on term changes)
+/// 2. **Zone diversity** — round-robin across zones so replicas span
+///    failure domains
+/// 3. **Lowest pressure** — within each zone, pick the unit with the
+///    lowest pressure score
 pub struct EnsembleSelector {
     units: Vec<UnitInfo>,
 }
@@ -50,8 +45,17 @@ impl EnsembleSelector {
         }
     }
 
-    /// Select an ensemble of `rf` units, excluding the given addresses.
-    pub fn select(&self, rf: usize, exclude: &[String]) -> Option<Vec<String>> {
+    /// Select an ensemble of `rf` units.
+    ///
+    /// - `previous`: addresses from the prior ensemble — these are preferred
+    ///   if still writable and not excluded
+    /// - `exclude`: addresses to never select
+    pub fn select(
+        &self,
+        rf: usize,
+        previous: &[String],
+        exclude: &[String],
+    ) -> Option<Vec<String>> {
         let candidates: Vec<&UnitInfo> = self
             .units
             .iter()
@@ -62,25 +66,54 @@ impl EnsembleSelector {
             return None;
         }
 
-        // Group by zone, sort each group by score (lower = better)
+        let mut ensemble: Vec<String> = Vec::with_capacity(rf);
+        let mut used_zones: HashMap<&str, usize> = HashMap::new();
+
+        // Phase 1: retain previous ensemble members that are still writable
+        for addr in previous {
+            if ensemble.len() >= rf {
+                break;
+            }
+            if let Some(u) = candidates.iter().find(|u| u.address == *addr) {
+                ensemble.push(u.address.clone());
+                *used_zones.entry(u.zone.as_str()).or_default() += 1;
+            }
+        }
+
+        if ensemble.len() >= rf {
+            return Some(ensemble);
+        }
+
+        // Phase 2: fill remaining slots with zone-diverse, low-pressure units
+        let remaining: Vec<&UnitInfo> = candidates
+            .iter()
+            .filter(|u| !ensemble.contains(&u.address))
+            .copied()
+            .collect();
+
+        // Group by zone, sort each group by pressure (ascending)
         let mut by_zone: HashMap<&str, Vec<&UnitInfo>> = HashMap::new();
-        for u in &candidates {
+        for u in &remaining {
             by_zone.entry(u.zone.as_str()).or_default().push(u);
         }
         for group in by_zone.values_mut() {
             group.sort_by(|a, b| {
-                a.score()
-                    .partial_cmp(&b.score())
+                a.pressure
+                    .partial_cmp(&b.pressure)
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
         }
 
-        // Round-robin across zones to spread replicas
+        // Sort zones: prefer zones with fewer already-selected units,
+        // then alphabetically for determinism
         let mut zone_keys: Vec<&str> = by_zone.keys().copied().collect();
-        zone_keys.sort();
+        zone_keys.sort_by(|a, b| {
+            let count_a = used_zones.get(a).copied().unwrap_or(0);
+            let count_b = used_zones.get(b).copied().unwrap_or(0);
+            count_a.cmp(&count_b).then(a.cmp(b))
+        });
 
         let mut zone_cursors = vec![0usize; zone_keys.len()];
-        let mut ensemble = Vec::with_capacity(rf);
 
         let mut passes = 0;
         while ensemble.len() < rf {
@@ -127,11 +160,11 @@ mod tests {
         }
     }
 
-    fn unit_with_metrics(addr: &str, zone: &str, traffic: f64, pressure: f64) -> UnitInfo {
+    fn unit_with_pressure(addr: &str, zone: &str, pressure: f64) -> UnitInfo {
         UnitInfo {
             address: addr.into(),
             zone: zone.into(),
-            traffic,
+            traffic: 0.0,
             pressure,
             writable: true,
         }
@@ -144,7 +177,41 @@ mod tests {
             unit("b", "us-west-2"),
             unit("c", "eu-west-1"),
         ]);
-        let result = sel.select(2, &[]).unwrap();
+        let result = sel.select(2, &[], &[]).unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn previous_ensemble_preferred() {
+        let sel = EnsembleSelector::from_units(vec![
+            unit("a", "zone-a"),
+            unit("b", "zone-b"),
+            unit("c", "zone-c"),
+            unit("d", "zone-d"),
+        ]);
+        let prev = vec!["b".into(), "c".into()];
+        let result = sel.select(3, &prev, &[]).unwrap();
+        // b and c should be kept, plus one more
+        assert!(result.contains(&"b".to_string()));
+        assert!(result.contains(&"c".to_string()));
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn previous_skips_non_writable() {
+        let mut b = unit("b", "zone-b");
+        b.writable = false;
+        let sel = EnsembleSelector::from_units(vec![
+            unit("a", "zone-a"),
+            b,
+            unit("c", "zone-c"),
+            unit("d", "zone-d"),
+        ]);
+        let prev = vec!["b".into(), "c".into()];
+        let result = sel.select(2, &prev, &[]).unwrap();
+        // b is not writable, should be skipped
+        assert!(!result.contains(&"b".to_string()));
+        assert!(result.contains(&"c".to_string()));
         assert_eq!(result.len(), 2);
     }
 
@@ -157,8 +224,7 @@ mod tests {
             unit("b2", "zone-b"),
             unit("c1", "zone-c"),
         ]);
-        let result = sel.select(3, &[]).unwrap();
-        // Should pick one from each zone
+        let result = sel.select(3, &[], &[]).unwrap();
         let zones: Vec<&str> = result
             .iter()
             .map(|addr| {
@@ -170,37 +236,39 @@ mod tests {
                     .as_str()
             })
             .collect();
-        assert_eq!(zones.len(), 3);
-        // All zones should be unique
         let mut unique = zones.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!(unique.len(), 3);
+        assert_eq!(unique.len(), 3, "should pick from 3 different zones");
     }
 
     #[test]
-    fn prefers_low_traffic() {
+    fn prefers_low_pressure() {
         let sel = EnsembleSelector::from_units(vec![
-            unit_with_metrics("hot", "zone-a", 0.9, 0.0),
-            unit_with_metrics("cold", "zone-a", 0.1, 0.0),
-            unit_with_metrics("other", "zone-b", 0.5, 0.0),
+            unit_with_pressure("hot", "zone-a", 0.9),
+            unit_with_pressure("cold", "zone-a", 0.1),
+            unit_with_pressure("other", "zone-b", 0.2),
         ]);
-        let result = sel.select(2, &[]).unwrap();
-        // Should pick cold (zone-a, low traffic) and other (zone-b)
+        let result = sel.select(2, &[], &[]).unwrap();
         assert!(result.contains(&"cold".to_string()));
         assert!(result.contains(&"other".to_string()));
     }
 
     #[test]
-    fn avoids_high_pressure() {
+    fn zone_diversity_after_previous() {
+        // Previous has 2 from zone-a. Fill should prefer zone-b over zone-a.
         let sel = EnsembleSelector::from_units(vec![
-            unit_with_metrics("pressured", "zone-a", 0.1, 0.9),
-            unit_with_metrics("healthy", "zone-a", 0.3, 0.0),
-            unit_with_metrics("other", "zone-b", 0.2, 0.0),
+            unit("a1", "zone-a"),
+            unit("a2", "zone-a"),
+            unit("a3", "zone-a"),
+            unit("b1", "zone-b"),
         ]);
-        let result = sel.select(2, &[]).unwrap();
-        assert!(result.contains(&"healthy".to_string()));
-        assert!(result.contains(&"other".to_string()));
+        let prev = vec!["a1".into(), "a2".into()];
+        let result = sel.select(3, &prev, &[]).unwrap();
+        assert!(result.contains(&"a1".to_string()));
+        assert!(result.contains(&"a2".to_string()));
+        // Should pick b1 (zone-b) over a3 (zone-a) for diversity
+        assert!(result.contains(&"b1".to_string()));
     }
 
     #[test]
@@ -210,7 +278,7 @@ mod tests {
             unit("b", "zone-b"),
             unit("c", "zone-c"),
         ]);
-        let result = sel.select(2, &["a".into()]).unwrap();
+        let result = sel.select(2, &[], &["a".into()]).unwrap();
         assert!(!result.contains(&"a".to_string()));
         assert_eq!(result.len(), 2);
     }
@@ -218,7 +286,7 @@ mod tests {
     #[test]
     fn insufficient_units() {
         let sel = EnsembleSelector::from_units(vec![unit("a", "zone-a")]);
-        assert!(sel.select(2, &[]).is_none());
+        assert!(sel.select(2, &[], &[]).is_none());
     }
 
     #[test]
@@ -226,37 +294,34 @@ mod tests {
         let mut u = unit("a", "zone-a");
         u.writable = false;
         let sel = EnsembleSelector::from_units(vec![u, unit("b", "zone-b")]);
-        assert!(sel.select(2, &[]).is_none());
+        assert!(sel.select(2, &[], &[]).is_none());
     }
 
     #[test]
     fn update_metrics() {
         let mut sel = EnsembleSelector::from_units(vec![
-            unit_with_metrics("a", "zone-a", 0.1, 0.0),
-            unit_with_metrics("b", "zone-a", 0.5, 0.0),
-            unit_with_metrics("c", "zone-b", 0.3, 0.0),
+            unit_with_pressure("a", "zone-a", 0.0),
+            unit_with_pressure("b", "zone-a", 0.5),
+            unit_with_pressure("c", "zone-b", 0.3),
         ]);
-        // a is preferred initially
-        let result = sel.select(2, &[]).unwrap();
+        let result = sel.select(2, &[], &[]).unwrap();
         assert!(result.contains(&"a".to_string()));
 
         // Now a gets heavy pressure
-        sel.update_metrics("a", 0.1, 1.0);
-        let result = sel.select(2, &[]).unwrap();
-        // b should be picked from zone-a now
+        sel.update_metrics("a", 0.0, 1.0);
+        let result = sel.select(2, &[], &[]).unwrap();
         assert!(result.contains(&"b".to_string()));
         assert!(result.contains(&"c".to_string()));
     }
 
     #[test]
     fn single_zone_fallback() {
-        // All units in same zone — should still work
         let sel = EnsembleSelector::from_units(vec![
             unit("a", "zone-a"),
             unit("b", "zone-a"),
             unit("c", "zone-a"),
         ]);
-        let result = sel.select(3, &[]).unwrap();
+        let result = sel.select(3, &[], &[]).unwrap();
         assert_eq!(result.len(), 3);
     }
 }
