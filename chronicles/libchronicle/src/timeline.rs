@@ -1,28 +1,19 @@
 use crate::conn::ConnPool;
 use crate::cursor::EventStream;
-use crate::ensemble;
 use crate::error::ChronicleError;
-use crate::event_group::{self, PendingEvent};
 use crate::state_machine::StateMachine;
+use crate::write_group::WriteGroup;
 use crate::{Event as UserEvent, FetchOptions, Offset, StartPosition, TimelineOptions, Writer};
 use catalog::Catalog;
-use chronicle_proto::pb_catalog::{Segment, TimelineMeta, TimelineStatus};
-use std::sync::{Arc, Mutex};
-use tokio::sync::{mpsc, oneshot};
+use std::sync::Arc;
 use tracing::info;
 
-struct TimelineInner {
-    event_tx: Option<mpsc::Sender<PendingEvent>>,
-    group_task: Option<tokio::task::JoinHandle<()>>,
-}
-
 pub struct Timeline {
-    timeline_id: i64,
+    state_machine: StateMachine,
     #[allow(dead_code)]
     options: TimelineOptions,
     pool: Arc<ConnPool>,
-    sm: Arc<StateMachine>,
-    inner: Mutex<TimelineInner>,
+    write_group: WriteGroup,
 }
 
 impl Timeline {
@@ -32,88 +23,39 @@ impl Timeline {
         name: &str,
         options: TimelineOptions,
     ) -> Result<Self, ChronicleError> {
-        let rf = options.replication_factor;
+        let state_machine = StateMachine::open(
+            &catalog,
+            &pool,
+            name,
+            options.replication_factor,
+            options.schema_id.clone(),
+        )
+        .await?;
 
-        let tc = match catalog.get_timeline(name).await {
-            Ok(tc) => tc,
-            Err(catalog::error::CatalogError::NotFound(_)) => {
-                let tc = catalog.create_timeline(name).await?;
-
-                let registrations = catalog.list_units().await?;
-                let available: Vec<String> = registrations
-                    .iter()
-                    .filter(|r| r.status() == chronicle_proto::pb_catalog::UnitStatus::Writable)
-                    .map(|r| r.address.clone())
-                    .collect();
-
-                let ens = ensemble::select(&available, &[], &[], rf)
-                    .ok_or_else(|| {
-                        ChronicleError::EnsembleUnavailable(format!(
-                            "need {} units, have {}",
-                            rf, available.len()
-                        ))
-                    })?;
-
-                let first_segment = Segment {
-                    ensemble: ens.clone(),
-                    start_offset: 1,
-                };
-                catalog.put_segment(name, &first_segment).await?;
-
-                let mut updated = tc.clone();
-                updated.status = TimelineStatus::Active as i32;
-                updated.term = 0;
-                let updated = catalog.put_timeline(&updated, tc.version).await?;
-
-                info!(
-                    timeline = name,
-                    timeline_id = updated.timeline_id,
-                    ensemble = ?ens,
-                    "timeline created"
-                );
-
-                updated
-            }
-            Err(e) => return Err(e.into()),
-        };
-
-        let sm = Arc::new(
-            StateMachine::open(&catalog, &pool, &tc, rf, options.schema_id.clone()).await?
+        let write_group = WriteGroup::start(
+            state_machine.shared(),
+            options.max_batch_size,
+            options.linger,
         );
 
-        let (event_tx, event_rx) = mpsc::channel::<PendingEvent>(options.max_batch_size * 2);
-
-        let sm_clone = sm.clone();
-        let batch_size = options.max_batch_size;
-        let linger = options.linger;
-        let timeline_id = tc.timeline_id;
-        let group_task = tokio::spawn(async move {
-            event_group::run(timeline_id, sm_clone, event_rx, batch_size, linger).await;
-        });
-
         Ok(Self {
-            timeline_id: tc.timeline_id,
+            state_machine,
             options,
             pool,
-            sm,
-            inner: Mutex::new(TimelineInner {
-                event_tx: Some(event_tx),
-                group_task: Some(group_task),
-            }),
+            write_group,
         })
     }
 
     pub fn fetch(&self, opts: FetchOptions) -> EventStream {
         let start_offset = match opts.start {
             StartPosition::Earliest => 1,
-            StartPosition::Latest => self.sm.lra() + 1,
+            StartPosition::Latest => self.state_machine.lra() + 1,
             StartPosition::Offset(o) => o,
             StartPosition::Index { .. } => 1,
         };
 
-        let segments = self.sm.segments.clone();
         let mut conns = std::collections::HashMap::new();
-        for seg in &segments {
+        for seg in &self.state_machine.segments {
             for ep in &seg.ensemble {
                 if !conns.contains_key(ep) {
                     if let Ok(conn) = self.pool.get_or_connect(ep) {
@@ -124,8 +66,8 @@ impl Timeline {
         }
 
         let mut stream = EventStream::new(
-            self.timeline_id,
-            segments,
+            self.state_machine.timeline_id(),
+            self.state_machine.segments.clone(),
             &conns,
             start_offset,
         );
@@ -144,33 +86,15 @@ impl Timeline {
     }
 
     pub async fn close(&self) {
-        let task = {
-            let mut inner = self.inner.lock().unwrap();
-            inner.event_tx.take();
-            inner.group_task.take()
-        };
-        if let Some(task) = task {
-            let _ = task.await;
-        }
-        self.sm.close().await;
-        info!(timeline_id = self.timeline_id, "timeline closed");
+        self.write_group.close().await;
+        self.state_machine.close().await;
+        info!(timeline_id = self.state_machine.timeline_id(), "timeline closed");
     }
 }
 
 #[async_trait::async_trait]
 impl Writer for Timeline {
     async fn record(&self, event: UserEvent) -> Result<Offset, ChronicleError> {
-        let sender = {
-            let inner = self.inner.lock().unwrap();
-            inner.event_tx.clone()
-                .ok_or_else(|| ChronicleError::Internal("timeline closed".into()))?
-        };
-        let (tx, rx) = oneshot::channel();
-        sender
-            .send(PendingEvent { event, tx })
-            .await
-            .map_err(|_| ChronicleError::Internal("timeline closed".into()))?;
-        rx.await
-            .map_err(|_| ChronicleError::Internal("ack channel dropped".into()))?
+        self.write_group.record(event).await
     }
 }

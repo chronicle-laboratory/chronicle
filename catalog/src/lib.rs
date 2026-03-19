@@ -1,11 +1,23 @@
 pub mod error;
 pub mod oxia_catalog;
 
-use chronicle_proto::pb_catalog::{Segment, TimelineMeta, UnitRegistration};
 use error::CatalogError;
 use oxia_catalog::OxiaCatalog;
 use serde::Deserialize;
 use tracing::info;
+
+/// Wraps a value with its catalog version for CAS operations.
+#[derive(Debug, Clone)]
+pub struct Versioned<T> {
+    pub value: T,
+    pub version: i64,
+}
+
+impl<T> Versioned<T> {
+    pub fn new(value: T, version: i64) -> Self {
+        Self { value, version }
+    }
+}
 
 pub const SEGMENT_KEY_PAD: usize = 20;
 

@@ -6,6 +6,7 @@ use prost::Message;
 use std::sync::atomic::{AtomicI64, Ordering};
 use tracing::{debug, info, warn};
 
+use crate::Versioned;
 use crate::error::CatalogError;
 
 const KEY_PREFIX: &str = "/chronicle/timelines/";
@@ -141,7 +142,10 @@ impl OxiaCatalog {
         let meta = TimelineMeta {
             name: name.to_string(),
             timeline_id,
-            ..Default::default()
+            status: chronicle_proto::pb_catalog::TimelineStatus::Active as i32,
+            term: 0,
+            lra: 0,
+            version: 0,
         };
         let key = Self::meta_key(name);
         let value = meta.encode_to_vec();
@@ -162,12 +166,22 @@ impl OxiaCatalog {
         Ok(created)
     }
 
-    pub async fn delete_timeline(&self, name: &str) -> Result<(), CatalogError> {
+    pub async fn delete_timeline(&self, name: &str, expected_version: i64) -> Result<(), CatalogError> {
         let key = Self::meta_key(name);
-        self.client.delete(key).await.map_err(|e| match e {
-            OxiaError::KeyNotFound() => CatalogError::NotFound(name.to_string()),
-            other => CatalogError::from(other),
-        })?;
+        self.client
+            .delete_with_options(
+                key,
+                vec![liboxia::client::DeleteOption::ExpectVersionId(expected_version)],
+            )
+            .await
+            .map_err(|e| match e {
+                OxiaError::KeyNotFound() => CatalogError::NotFound(name.to_string()),
+                OxiaError::UnexpectedVersionId() => CatalogError::VersionConflict {
+                    expected: expected_version,
+                    actual: -1,
+                },
+                other => CatalogError::from(other),
+            })?;
         // TODO: also delete segment keys
         Ok(())
     }
@@ -200,17 +214,30 @@ impl OxiaCatalog {
         &self,
         timeline_name: &str,
         segment: &Segment,
-    ) -> Result<(), CatalogError> {
+        expected_version: i64,
+    ) -> Result<Versioned<Segment>, CatalogError> {
         let key = crate::segment_key(timeline_name, segment.start_offset);
         let value = segment.encode_to_vec();
-        self.client
-            .put(key, value)
+        let result = self
+            .client
+            .put_with_options(
+                key,
+                value,
+                vec![PutOption::ExpectVersionId(expected_version)],
+            )
             .await
-            .map_err(CatalogError::from)?;
-        Ok(())
+            .map_err(|e| match e {
+                OxiaError::UnexpectedVersionId() => CatalogError::VersionConflict {
+                    expected: expected_version,
+                    actual: -1,
+                },
+                other => CatalogError::from(other),
+            })?;
+
+        Ok(Versioned::new(segment.clone(), result.version.version_id))
     }
 
-    pub async fn list_segments(&self, timeline_name: &str) -> Result<Vec<Segment>, CatalogError> {
+    pub async fn list_segments(&self, timeline_name: &str) -> Result<Vec<Versioned<Segment>>, CatalogError> {
         let min_key = crate::segment_key_prefix(timeline_name);
         let max_key = crate::segment_key_max(timeline_name);
 
@@ -225,13 +252,13 @@ impl OxiaCatalog {
             if let Some(ref value) = record.value {
                 let seg = Segment::decode(value.as_slice())
                     .map_err(|e| CatalogError::Internal(format!("failed to decode segment: {}", e)))?;
-                segments.push(seg);
+                segments.push(Versioned::new(seg, record.version.version_id));
             }
         }
         Ok(segments)
     }
 
-    pub async fn get_last_segment(&self, timeline_name: &str) -> Result<Option<Segment>, CatalogError> {
+    pub async fn get_last_segment(&self, timeline_name: &str) -> Result<Option<Versioned<Segment>>, CatalogError> {
         let segments = self.list_segments(timeline_name).await?;
         Ok(segments.into_iter().last())
     }

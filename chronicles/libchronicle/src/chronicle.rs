@@ -74,6 +74,11 @@ impl Chronicle {
         }
     }
 
+    pub async fn create_timeline(&self, name: &str) -> Result<(), ChronicleError> {
+        self.catalog.create_timeline(name).await?;
+        Ok(())
+    }
+
     pub async fn open_timeline(&self, name: &str, options: TimelineOptions) -> Result<Timeline, ChronicleError> {
         Timeline::open(
             self.catalog.clone(),
@@ -85,7 +90,8 @@ impl Chronicle {
     }
 
     pub async fn drop_timeline(&self, name: &str) -> Result<(), ChronicleError> {
-        self.catalog.delete_timeline(name).await?;
+        let tc = self.catalog.get_timeline(name).await?;
+        self.catalog.delete_timeline(name, tc.version).await?;
         Ok(())
     }
 }
